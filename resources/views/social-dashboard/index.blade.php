@@ -6,9 +6,16 @@
 
 	<div class="d-flex align-items-center justify-content-between gap-2 mb-4 flex-wrap">
 		<h4 class="mb-0">Social Media Dashboard</h4>
-		<a href="{{ route('social-accounts.index') }}" class="btn btn-outline-light">
-			<i class="ti ti-settings me-1"></i> Manage Accounts
-		</a>
+		<div class="dropdown">
+			<button class="btn btn-outline-light dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+				<i class="ti ti-settings me-1"></i> Manage Accounts
+			</button>
+			<ul class="dropdown-menu dropdown-menu-end">
+				<li><a class="dropdown-item" href="{{ route('social-accounts.instagram.index') }}"><i class="ti ti-brand-instagram me-1"></i> Instagram</a></li>
+				<li><a class="dropdown-item" href="{{ route('social-accounts.youtube.index') }}"><i class="ti ti-brand-youtube me-1"></i> YouTube</a></li>
+				<li><a class="dropdown-item" href="{{ route('social-accounts.linkedin.index') }}"><i class="ti ti-brand-linkedin me-1"></i> LinkedIn</a></li>
+			</ul>
+		</div>
 	</div>
 
 	<!-- Filters -->
@@ -40,8 +47,10 @@
 
 	@if ($accounts->isEmpty())
 		<div class="alert alert-info">
-			No active social accounts connected yet.
-			<a href="{{ route('social-accounts.create') }}">Connect one to get started</a>.
+			No active social accounts connected yet. Connect
+			<a href="{{ route('social-accounts.instagram.create') }}">Instagram</a>,
+			<a href="{{ route('social-accounts.youtube.create') }}">YouTube</a>, or
+			<a href="{{ route('social-accounts.linkedin.index') }}">LinkedIn</a> to get started.
 		</div>
 	@else
 		<!-- Overview Cards -->

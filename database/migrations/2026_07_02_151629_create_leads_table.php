@@ -19,6 +19,7 @@ return new class extends Migration
             $table->string('campaign_name')->nullable();  // for correlating lead quality per campaign
 
             $table->foreignId('added_by_user_id')
+                ->nullable()                               // null = website/LMS/webhook capture (no internal user)
                 ->constrained('users')
                 ->cascadeOnDelete();                       // Media Strategist who added the lead
 

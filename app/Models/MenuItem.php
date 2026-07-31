@@ -2,10 +2,11 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 
 class MenuItem extends Model
 {
@@ -54,7 +55,7 @@ class MenuItem extends Model
      * Call this once per request (e.g. from a View Composer) and pass the
      * result into the sidebar partial.
      */
-    public static function treeForUser(?User $user): \Illuminate\Support\Collection
+    public static function treeForUser(?User $user): Collection
     {
         $allowedPermissionIds = $user && $user->role
             ? $user->role->permissions()->pluck('permissions.id')
@@ -71,11 +72,20 @@ class MenuItem extends Model
 
         $byParent = $visible->groupBy('parent_id');
 
+        // A row with no URL is only a heading for its children. Once permission
+        // filtering removes every child, that heading has nothing to open — the
+        // sidebar would still render it as a javascript:void(0) link that looks
+        // clickable but does nothing. Drop those, innermost level first so a
+        // heading whose only child was itself pruned goes too.
         $buildBranch = function ($parentId) use (&$buildBranch, $byParent) {
-            return ($byParent->get($parentId) ?? collect())->map(function (MenuItem $item) use (&$buildBranch) {
-                $item->setRelation('childrenTree', $buildBranch($item->id));
-                return $item;
-            })->values();
+            return ($byParent->get($parentId) ?? collect())
+                ->map(function (MenuItem $item) use (&$buildBranch) {
+                    $item->setRelation('childrenTree', $buildBranch($item->id));
+
+                    return $item;
+                })
+                ->reject(fn (MenuItem $item) => blank($item->url) && $item->childrenTree->isEmpty())
+                ->values();
         };
 
         return $buildBranch(null);

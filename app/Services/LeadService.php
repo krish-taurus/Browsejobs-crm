@@ -9,10 +9,12 @@ use App\Models\Lead;
 use App\Models\LeadCall;
 use App\Models\LeadStatus;
 use App\Models\LeadStatusHistory;
+use App\Models\Lms\LmsLead;
 use App\Models\User;
 use App\Notifications\LeadAssignedNotification;
 use App\Notifications\LeadCreatedNotification;
 use App\Notifications\LeadEventNotification;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
@@ -103,13 +105,42 @@ class LeadService
      */
     public function maybeAutoCall(Lead $lead, ?int $addedByUserId): void
     {
-        if ($lead->calls()->where('type', 'ai')->exists()) {
+        if ($lead->calls()->where('type', 'ai')->exists() || $this->candidateAlreadyAiCalled($lead)) {
             return;
         }
 
         if (config('services.caller_digital.auto_call') && $this->caller->isConfigured() && ! $this->aiCallCapReached()) {
             $this->triggerAiCall($lead, $addedByUserId);
         }
+    }
+
+    /**
+     * Has this candidate — same phone number, on ANY lead — already had a
+     * COMPLETED AI call? Once someone has answered the AI agent, auto-calling
+     * must never dial them again, even if they re-enter the CRM as a fresh
+     * lead (LMS import, second ad campaign, manual re-entry). Matches on the
+     * last 10 digits so +91/0-prefixed formats count as the same number.
+     * Manual re-trigger from the lead page is intentionally NOT gated by this.
+     */
+    public function candidateAlreadyAiCalled(Lead $lead): bool
+    {
+        $digits = preg_replace('/\D+/', '', (string) $lead->mobile) ?? '';
+        $last10 = substr($digits, -10);
+
+        // Strip the separators people type into phone fields before comparing,
+        // so "+91 98123-45678" and "9812345678" are the same number.
+        $normalizedToNumber = "REPLACE(REPLACE(REPLACE(REPLACE(to_number, ' ', ''), '-', ''), '(', ''), ')', '')";
+
+        return LeadCall::query()
+            ->where('type', 'ai')
+            ->where('status', 'completed')
+            ->where('lead_id', '!=', $lead->id)
+            ->when(
+                strlen($last10) >= 10,
+                fn ($q) => $q->whereRaw("{$normalizedToNumber} LIKE ?", ["%{$last10}"]),
+                fn ($q) => $q->where('to_number', $lead->mobile),
+            )
+            ->exists();
     }
 
     /**
@@ -174,6 +205,12 @@ class LeadService
                 'external_campaign_id' => $result['campaign_id'],
                 'status' => 'ringing',
             ]);
+
+            // While the AI call is in flight, the lead shows as "AI Call Running"
+            // (only from New — never clobber a status a human already set).
+            if ($lead->status()->value('slug') === 'new') {
+                $this->setStatusBySlug($lead, 'ai_call_running', 'AI call placed — waiting for the call to finish.');
+            }
         } catch (\Throwable $e) {
             $call->update(['status' => 'failed', 'meta' => ['error' => $e->getMessage()]]);
         }
@@ -241,13 +278,230 @@ class LeadService
 
         if ($interested) {
             $this->setStatusBySlug($lead, 'interested', 'AI call: lead sounded interested — route to a human caller.');
+
+            // Fully automatic course routing: if HR hasn't picked a course yet,
+            // read it out of the call transcript before the LMS handoff.
+            if (blank($lead->interested_course_slug) && ($slug = $this->detectCourseFromCall($call)) !== null) {
+                $lead->update(['interested_course_slug' => $slug]);
+                $lead->refresh();
+            }
+
+            $this->handleInterested($lead);
             $this->notifyHrToAssign($lead, 'interested');
         } elseif ($needsHuman) {
             $this->setStatusBySlug($lead, 'follow_up', 'AI call: needs a human follow-up call.');
             $this->notifyHrToAssign($lead, 'follow-up');
         } elseif ($notInterested) {
             $this->setStatusBySlug($lead, 'not_interested', 'AI call: lead not interested.');
+        } elseif ($lead->status()->value('slug') === 'ai_call_running') {
+            // The call finished but the disposition matched nothing — never leave
+            // a lead stuck in "AI Call Running"; hand it to a human instead.
+            $this->setStatusBySlug($lead, 'follow_up', 'AI call completed without a clear outcome — needs human review.');
+            $this->notifyHrToAssign($lead, 'follow-up');
         }
+    }
+
+    /**
+     * Read the course the candidate talked about out of the AI call. Matches
+     * the transcript + disposition against the LMS course catalogue (name, or
+     * slug with dashes as spaces) and answers only when EXACTLY one course
+     * matches — ambiguity stays with HR. Best-effort: null if the LMS is down.
+     */
+    public function detectCourseFromCall(LeadCall $call): ?string
+    {
+        $text = mb_strtolower(trim(($call->transcript ?? '').' '.($call->disposition ?? '')));
+
+        if ($text === '') {
+            return null;
+        }
+
+        try {
+            $matches = DB::connection('lms')->table('courses')
+                ->get(['slug', 'name'])
+                ->filter(function ($course) use ($text) {
+                    return str_contains($text, mb_strtolower($course->name))
+                        || str_contains($text, str_replace('-', ' ', mb_strtolower($course->slug)));
+                })
+                ->unique('slug');
+
+            return $matches->count() === 1 ? $matches->first()->slug : null;
+        } catch (QueryException|\PDOException $e) {
+            report($e);
+
+            return null;
+        }
+    }
+
+    /**
+     * Everything that happens the moment a lead turns Interested — whether the
+     * AI decided it or HR set the status by hand: mirror the lead into the LMS
+     * (so the Batch Funnel page sees the interest) and send them the
+     * masterclass watch link right away. Batches themselves are created and
+     * allocated MANUALLY from the CRM — nothing automatic happens after this.
+     */
+    public function handleInterested(Lead $lead): void
+    {
+        $this->pushInterestedToLms($lead);
+        $this->sendMasterclassInvite($lead);
+    }
+
+    /**
+     * WhatsApp + email the interested candidate the masterclass link — the
+     * daily simulated-live showing, so a Monday lead watches today at the
+     * fixed show time instead of waiting for Saturday's live session. Sent
+     * exactly once per lead; the did-you-watch follow-up runs the next day
+     * (leads:masterclass-followup).
+     */
+    public function sendMasterclassInvite(Lead $lead): void
+    {
+        if ($lead->masterclass_link_sent_at !== null) {
+            return;
+        }
+
+        $base = rtrim((string) config('services.lms.masterclass_watch_url'), '/');
+        $link = filled($lead->interested_course_slug) ? $base.'/'.$lead->interested_course_slug : $base;
+        $showTime = (string) config('services.lms.masterclass_show_time_label', '8:00 PM');
+        $name = $lead->name ?: 'there';
+
+        $message = "Hi {$name}! 🎓 Great talking to you.\n\n"
+            ."Your FREE live masterclass runs TODAY at {$showTime}. Join from this link:\n{$link}\n\n"
+            .'Open it a few minutes early — the session starts automatically. See you there!';
+
+        $sent = false;
+
+        if (filled($lead->mobile)) {
+            // Approved template first (delivers outside the 24h session window);
+            // session text as the fallback while approval is pending.
+            $template = config('services.whatsapp.templates.masterclass_invite');
+            $viaTemplate = $template
+                ? $this->whatsApp->sendTemplate($lead->mobile, $template, 'en', [$name, $showTime, $link]) !== null
+                : false;
+
+            $sent = $viaTemplate || $this->whatsApp->sendText($lead->mobile, $message) || $sent;
+        }
+
+        if (filled($lead->email)) {
+            try {
+                Mail::to($lead->email)->send(new GenericMail(
+                    "Your free masterclass — today at {$showTime}",
+                    "<p>Hi {$name},</p><p>Your free live masterclass runs <strong>today at {$showTime}</strong>.</p>"
+                    ."<p><a href=\"{$link}\">Click here to join the masterclass</a> — open it a few minutes early, the session starts automatically.</p>"
+                    .'<p>See you there!<br>Team BrowseJobs</p>'
+                ));
+                $sent = true;
+            } catch (\Throwable) {
+                // best-effort
+            }
+        }
+
+        if ($sent) {
+            $lead->forceFill(['masterclass_link_sent_at' => now()])->save();
+        }
+    }
+
+    /**
+     * Mark a lead Joined — used when HR manually allocates the lead into an
+     * LMS batch (the moment a lead becomes a student).
+     */
+    public function markJoined(Lead $lead, string $remark): void
+    {
+        $this->setStatusBySlug($lead, 'joined', $remark);
+    }
+
+    /**
+     * Hand an Interested lead to the LMS as a masterclass lead, so the weekly
+     * funnel automation invites them and seats them in the next Saturday
+     * masterclass once they register an account. This is the ONE write the CRM
+     * makes to the LMS database — an insert into its lead-capture table, the
+     * same thing the LMS website form does. Best-effort and deduped by phone;
+     * the course is carried over when campaign_name matches an LMS course.
+     */
+    public function pushInterestedToLms(Lead $lead): void
+    {
+        try {
+            $digits = preg_replace('/\D+/', '', (string) $lead->mobile) ?? '';
+            $last10 = substr($digits, -10);
+
+            $existingLmsLead = LmsLead::query()
+                ->when(
+                    strlen($last10) >= 10,
+                    fn ($q) => $q->where('phone_normalized', 'like', "%{$last10}"),
+                    fn ($q) => $q->where('phone', $lead->mobile),
+                )
+                ->first();
+
+            $stage = DB::connection('lms')->table('lead_stages')
+                ->where('slug', 'masterclass-registered')
+                ->first();
+
+            $tenantId = $stage->tenant_id ?? DB::connection('lms')->table('tenants')->value('id');
+
+            if ($tenantId === null) {
+                return;
+            }
+
+            // HR's explicit course choice wins; otherwise try to read the course
+            // from the ad campaign name. Always validated against the catalogue.
+            $courseSlug = null;
+            foreach ([$lead->interested_course_slug, $lead->campaign_name] as $candidate) {
+                if (blank($candidate)) {
+                    continue;
+                }
+
+                $courseSlug = DB::connection('lms')->table('courses')
+                    ->where('tenant_id', $tenantId)
+                    ->where(function ($q) use ($candidate) {
+                        $q->where('slug', $candidate)->orWhere('name', $candidate);
+                    })
+                    ->value('slug');
+
+                if ($courseSlug !== null) {
+                    break;
+                }
+            }
+
+            if ($existingLmsLead !== null) {
+                // Already handed off (or captured on the site) — just backfill
+                // the course if HR picked one and the LMS side has none yet.
+                if ($courseSlug !== null && blank($existingLmsLead->course_slug)) {
+                    $existingLmsLead->forceFill(['course_slug' => $courseSlug])->save();
+                }
+
+                return;
+            }
+
+            LmsLead::query()->forceCreate([
+                'tenant_id' => $tenantId,
+                'lead_type' => 'masterclass',
+                'name' => $lead->displayName(),
+                'phone' => $lead->mobile,
+                'phone_normalized' => $digits,
+                'email' => $lead->email,
+                'course_slug' => $courseSlug,
+                'utm_source' => 'crm',
+                'lead_stage_id' => $stage->id ?? null,
+                'consented_at' => now(),
+                'consent_version' => 'v1',
+            ]);
+        } catch (QueryException|\PDOException $e) {
+            report($e); // LMS unreachable — the funnel picks them up next time HR re-saves the status
+        }
+    }
+
+    /**
+     * The AI call never connected (failed / no answer / busy): drop the lead
+     * back to New so it stays visible in the fresh-leads queue for a human.
+     */
+    public function handleAiCallFailure(LeadCall $call): void
+    {
+        $lead = $call->lead;
+
+        if (! $lead || $lead->status()->value('slug') !== 'ai_call_running') {
+            return;
+        }
+
+        $reason = str_replace('_', ' ', $call->status);
+        $this->setStatusBySlug($lead, 'new', "AI call {$reason} — back to New for a human attempt.");
     }
 
     private function setStatusBySlug(Lead $lead, string $slug, string $remark): void

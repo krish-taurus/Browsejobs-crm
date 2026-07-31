@@ -67,6 +67,8 @@ class SyncCallerDigitalCalls extends Command
 
                 if ($call->status === 'completed') {
                     $leads->handleAiCallOutcome($call->fresh('lead'));
+                } elseif (in_array($call->status, ['failed', 'no_answer', 'busy'], true)) {
+                    $leads->handleAiCallFailure($call->fresh('lead'));
                 }
 
                 $this->line("Synced call #{$call->id}: {$call->status}");

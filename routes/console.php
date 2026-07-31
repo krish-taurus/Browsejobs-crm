@@ -66,6 +66,15 @@ Schedule::command('calls:sync')->everyTenMinutes();
 // imports) gets its auto-call within 10 minutes.
 Schedule::command('leads:auto-call')->everyTenMinutes();
 
+// Pull leads captured on the LMS site (forms, masterclass bookings, syllabus
+// downloads) into the CRM. They arrive in "New" status, so the normal
+// new-lead pipeline — notifications + AI auto-call — fires for them too.
+Schedule::command('leads:sync-lms')->everyFiveMinutes();
+
+// Next-day "did you watch the masterclass?" nudge (WhatsApp + AI call) for
+// interested leads who got the watch link — once per lead, stamped.
+Schedule::command('leads:masterclass-followup')->hourly();
+
 // Drain queued jobs (lead emails/WhatsApp/auto-call, campaigns) every minute.
 // --stop-when-empty + --max-time keep it from becoming a stuck long-running
 // process; withoutOverlapping stops two workers running at once.
@@ -74,3 +83,14 @@ Schedule::command('leads:auto-call')->everyTenMinutes();
 Schedule::command('queue:work --stop-when-empty --tries=3 --max-time=50')
     ->everyMinute()
     ->withoutOverlapping(2);
+
+// Keep the LMS's automation alive too: its scheduler (funnel:advance — the
+// Sat/Sun masterclass builder, bootcamp rollover, day-5 payment nudges) and
+// its database queue (Zoom meeting creation, 12h/2h/5min class reminders,
+// credential/welcome messages) only run when something invokes them. The CRM
+// is that something — one heartbeat per minute, in the background so the
+// CRM's own queue drain above is never delayed by a slow LMS beat.
+Schedule::command('lms:heartbeat')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->runInBackground();

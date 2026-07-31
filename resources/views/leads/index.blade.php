@@ -85,7 +85,7 @@
 				<table class="table table-bordered table-nowrap">
 					<thead class="table-white">
 						<tr>
-							<th>Lead</th><th>Mobile</th><th>Source</th><th>Status</th><th>AI Call</th><th>Assigned To</th><th>Created</th><th>Action</th>
+							<th>Lead</th><th>Mobile</th><th>Source</th><th>Status</th><th>AI Call</th><th>Batch</th><th>Assigned To</th><th>Created</th><th>Action</th>
 						</tr>
 					</thead>
 					<tbody id="leads-tbody">
@@ -120,12 +120,21 @@
 										</span>
 									@endif
 								</td>
+								<td>
+									@if ($lead->allocated_batch_number)
+										<span class="badge badge-soft-success" title="Student account created &amp; credentials sent">
+											<i class="ti ti-users me-1"></i>{{ $lead->allocated_batch_number }}
+										</span>
+									@else
+										<span class="badge bg-light text-muted">Not allocated</span>
+									@endif
+								</td>
 								<td>{{ $lead->assignee->full_name ?? '—' }}</td>
 								<td>{{ $lead->created_at->format('d M Y') }}</td>
 								<td><a href="{{ route('leads.show', $lead) }}" class="btn btn-sm btn-icon btn-outline-light"><i class="ti ti-eye"></i></a></td>
 							</tr>
 						@empty
-							<tr><td colspan="8" class="text-center py-4">No leads found.</td></tr>
+							<tr><td colspan="9" class="text-center py-4">No leads found.</td></tr>
 						@endforelse
 					</tbody>
 				</table>

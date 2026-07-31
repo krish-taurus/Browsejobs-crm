@@ -74,8 +74,11 @@ class CallerDigitalWebhookController extends Controller
         $call->save();
 
         // Route the outcome: good/interested leads move to a caller-ready status and HR is alerted.
+        // Calls that never connected drop the lead from "AI Call Running" back to New.
         if ($call->status === 'completed') {
             $leads->handleAiCallOutcome($call->fresh('lead'));
+        } elseif (in_array($call->status, ['failed', 'no_answer', 'busy'], true)) {
+            $leads->handleAiCallFailure($call->fresh('lead'));
         }
 
         return response()->json(['message' => 'ok']);

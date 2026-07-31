@@ -156,9 +156,15 @@ class DashboardController extends Controller
     {
         $code = $user->role?->role_code;
 
+        // The HR Manager supervises the callers rather than working a lead list
+        // of their own, so they get a monitoring dashboard, not "my leads".
+        if ($code === 'HR_MANAGER') {
+            return $this->hrManagerDashboard($user);
+        }
+
         $group = match (true) {
             in_array($code, ['SALES_MANAGER', 'SALES_EXECUTIVE'], true) => 'sales',
-            in_array($code, ['HR_MANAGER', 'HR', 'HR_TEAM_LEAD', 'HR_ADMIN'], true) => 'hr',
+            in_array($code, ['HR', 'HR_TEAM_LEAD', 'HR_ADMIN'], true) => 'hr',
             in_array($code, ['MARKETING_MANAGER', 'MARKETING_EXECUTIVE', 'SOCIAL_MEDIA_MANAGER', 'MEDIA_STRATEGIST'], true) => 'marketing',
             in_array($code, ['TRAINER', 'STUDENT_COUNSELOR', 'DATA_ENGINEER_TRAINER', 'TECH_MENTOR', 'TECH_MANAGER'], true) => 'training',
             default => 'personal',
@@ -169,6 +175,28 @@ class DashboardController extends Controller
         $myTodos = DB::table('todos')->where('user_id', $uid)->where('is_completed', false)->count();
         $myLeads = Lead::with('status')->where('assigned_to_user_id', $uid)->latest()->limit(6)->get();
         $myLeadCount = Lead::where('assigned_to_user_id', $uid)->count();
+
+        // My own pipeline, so the dashboard says something about the work
+        // rather than just linking away to it.
+        $myPipeline = Lead::query()
+            ->where('leads.assigned_to_user_id', $uid)
+            ->join('lead_statuses', 'lead_statuses.id', '=', 'leads.current_status_id')
+            ->groupBy('lead_statuses.id', 'lead_statuses.name', 'lead_statuses.color', 'lead_statuses.sort_order')
+            ->orderBy('lead_statuses.sort_order')
+            ->get([
+                'lead_statuses.name',
+                'lead_statuses.color',
+                DB::raw('COUNT(*) as total'),
+            ]);
+
+        // The same "needs chasing" rule the HR Performance board uses, scoped
+        // to this person: assigned over a day ago, still open, nothing logged.
+        $myUntouched = Lead::where('assigned_to_user_id', $uid)
+            ->where('assigned_at', '<', now()->subDay())
+            ->whereDoesntHave('status', fn ($q) => $q->whereIn('slug', ['joined', 'lost', 'not_interested', 'invalid_number']))
+            ->whereDoesntHave('calls', fn ($c) => $c->where('initiated_by_user_id', $uid))
+            ->whereDoesntHave('statusHistory', fn ($h) => $h->where('changed_by_user_id', $uid))
+            ->count();
 
         $interestedId = LeadStatus::where('slug', 'interested')->value('id');
         $newId = LeadStatus::where('slug', 'new')->value('id');
@@ -212,7 +240,90 @@ class DashboardController extends Controller
             'group' => $group,
             'cards' => $cards,
             'myLeads' => $myLeads,
+            'myLeadCount' => $myLeadCount,
+            'myPipeline' => $myPipeline,
+            'myUntouched' => $myUntouched,
             'loggedInToday' => $loggedInToday,
+        ]);
+    }
+
+    /** Roles that actually call leads — the people an HR Manager supervises. */
+    private const CALLER_ROLE_CODES = ['HR', 'HR_TEAM_LEAD', 'HR_ADMIN'];
+
+    /**
+     * The HR Manager's view: how the calling team is doing, and what still
+     * needs handing out. Never "my leads" — a manager carries no lead list.
+     */
+    private function hrManagerDashboard(User $user): View
+    {
+        $callers = User::query()
+            ->withRoleCode(self::CALLER_ROLE_CODES)
+            ->where('is_active', true)
+            ->get(['id', 'full_name', 'first_name', 'role_id']);
+
+        $callerIds = $callers->pluck('id');
+
+        $assigned = Lead::whereIn('assigned_to_user_id', $callerIds)->count();
+
+        $untouched = Lead::whereIn('assigned_to_user_id', $callerIds)
+            ->where('assigned_at', '<', now()->subDay())
+            ->whereDoesntHave('status', fn ($q) => $q->whereIn('slug', ['joined', 'lost', 'not_interested', 'invalid_number']))
+            ->whereDoesntHave('calls', fn ($c) => $c->whereColumn('lead_calls.initiated_by_user_id', 'leads.assigned_to_user_id'))
+            ->whereDoesntHave('statusHistory', fn ($h) => $h->whereColumn('lead_status_history.changed_by_user_id', 'leads.assigned_to_user_id'))
+            ->count();
+
+        $unassigned = Lead::whereNull('assigned_to_user_id')
+            ->whereDoesntHave('status', fn ($q) => $q->whereIn('slug', ['joined', 'lost', 'not_interested', 'invalid_number']))
+            ->count();
+
+        $joinedId = LeadStatus::where('slug', 'joined')->value('id');
+        $joinedThisMonth = $joinedId
+            ? Lead::where('current_status_id', $joinedId)->where('updated_at', '>=', now()->startOfMonth())->count()
+            : 0;
+
+        // Per-caller snapshot — the same definition the HR Performance board
+        // uses, kept deliberately short here (top 6 by open workload).
+        $team = $callers->map(function (User $caller) {
+            $base = fn () => Lead::where('assigned_to_user_id', $caller->id);
+
+            $assigned = $base()->count();
+            $pending = $base()
+                ->whereDoesntHave('status', fn ($q) => $q->whereIn('slug', ['joined', 'lost', 'not_interested', 'invalid_number']))
+                ->whereDoesntHave('calls', fn ($c) => $c->where('initiated_by_user_id', $caller->id))
+                ->whereDoesntHave('statusHistory', fn ($h) => $h->where('changed_by_user_id', $caller->id))
+                ->count();
+
+            return (object) [
+                'user' => $caller,
+                'assigned' => $assigned,
+                'pending' => $pending,
+                'joined' => $base()->whereHas('status', fn ($q) => $q->where('slug', 'joined'))->count(),
+                'done_pct' => $assigned > 0 ? (int) round(($assigned - $pending) / $assigned * 100) : null,
+            ];
+        })->sortByDesc('pending')->values();
+
+        $unassignedLeads = Lead::with('status')
+            ->whereNull('assigned_to_user_id')
+            ->latest()
+            ->limit(6)
+            ->get();
+
+        return view('dashboard-hr-manager', [
+            'user' => $user,
+            'roleName' => $user->role?->role_name ?? 'HR Manager',
+            'loggedInToday' => DB::table('user_login_logs')->where('user_id', $user->id)->whereDate('login_time', today())->exists(),
+            'callerCount' => $callers->count(),
+            'assigned' => $assigned,
+            'untouched' => $untouched,
+            'unassigned' => $unassigned,
+            'joinedThisMonth' => $joinedThisMonth,
+            'team' => $team,
+            'unassignedLeads' => $unassignedLeads,
+            'onLeaveToday' => LeaveRequest::with('user')
+                ->where('status', 'approved')
+                ->whereDate('from_date', '<=', today())
+                ->whereDate('to_date', '>=', today())
+                ->get(),
         ]);
     }
 

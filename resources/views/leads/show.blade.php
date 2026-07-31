@@ -62,6 +62,62 @@
 				</div>
 			</div>
 
+			<!-- Interested course (drives the weekend masterclass batch) -->
+			<div class="card mb-3">
+				<div class="card-body">
+					<h6 class="mb-3"><i class="ti ti-school me-1"></i> Interested course</h6>
+					<form method="POST" action="{{ route('leads.course', $lead) }}">
+						@csrf @method('PATCH')
+						<select name="interested_course_slug" class="form-select mb-2">
+							<option value="">— No course selected —</option>
+							@foreach ($lmsCourses as $course)
+								<option value="{{ $course->slug }}" @selected($lead->interested_course_slug === $course->slug)>{{ $course->name }}</option>
+							@endforeach
+						</select>
+						<p class="fs-12 text-muted mb-2">When this lead becomes Interested, the masterclass watch link for this course goes out on WhatsApp + email automatically.</p>
+						<button type="submit" class="btn btn-outline-primary btn-sm w-100">Save course</button>
+					</form>
+				</div>
+			</div>
+
+			<!-- Manual conversion: allocate the lead into an LMS batch -->
+			<div class="card mb-3">
+				<div class="card-body">
+					<h6 class="mb-2"><i class="ti ti-users-plus me-1"></i> Allocate to Batch</h6>
+					@if ($lead->allocated_batch_number)
+						<div class="alert alert-success fs-13 py-2 mb-2">
+							<i class="ti ti-circle-check me-1"></i>Already allocated to <strong>{{ $lead->allocated_batch_number }}</strong> — student account created &amp; sign-in link sent. Allocating again adds them to another batch too.
+						</div>
+					@endif
+					@if ($lead->masterclass_link_sent_at)
+						<p class="fs-12 text-muted mb-1">
+							<i class="ti ti-send me-1"></i>Masterclass link sent {{ $lead->masterclass_link_sent_at->format('d M, h:i A') }}
+							@if ($lead->masterclass_followup_at)
+								· follow-up {{ $lead->masterclass_followup_at->format('d M, h:i A') }}
+							@endif
+						</p>
+					@endif
+					@if ($lmsBatches->isEmpty())
+						<div class="alert alert-warning fs-12 mb-0">No active LMS batches (or LMS unreachable). Create one on the <a href="{{ route('live-batches.index') }}">Live Batches</a> page first.</div>
+					@else
+						<form method="POST" action="{{ route('leads.allocate-batch', $lead) }}"
+							onsubmit="return confirm('Move {{ $lead->displayName() }} into the selected batch? A student account will be created and credentials sent.');">
+							@csrf
+							<select name="lms_batch_id" class="form-select mb-2" required>
+								<option value="">Select batch…</option>
+								@foreach ($lmsBatches as $lmsBatch)
+									<option value="{{ $lmsBatch->id }}">
+										[{{ ucfirst($lmsBatch->type) }}] {{ $lmsBatch->number }} — {{ $lmsBatch->course?->name }}{{ $lmsBatch->starts_on ? ' · '.$lmsBatch->starts_on->format('d M') : '' }}
+									</option>
+								@endforeach
+							</select>
+							<p class="fs-12 text-muted mb-2">Creates their student account in the LMS, seats them as Enrolled, sends batch number + sign-in link on WhatsApp &amp; email (they log in with this number via OTP — no password), and marks this lead <strong>Joined</strong>.</p>
+							<button type="submit" class="btn btn-success btn-sm w-100"><i class="ti ti-arrow-right-circle me-1"></i> Move lead into batch</button>
+						</form>
+					@endif
+				</div>
+			</div>
+
 			<!-- Assign (HR Manager) -->
 			@if ($canAssign)
 				<div class="card mb-3">

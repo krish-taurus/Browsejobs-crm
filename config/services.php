@@ -40,6 +40,21 @@ return [
         'token' => env('THETAURUS_API_TOKEN'),
     ],
 
+    'lms' => [
+        // Filesystem path of the BrowseJobs LMS Laravel app — used to run its
+        // artisan commands (funnel:advance) from the CRM's Batch Funnel page.
+        'path' => env('LMS_APP_PATH', 'C:\\xampp\\htdocs\\Browsejobs-lms-main\\apps\\api'),
+        // CLI php executable. PHP_BINARY is Apache's binary in web requests,
+        // so the CLI path must be explicit (or discoverable on PATH).
+        'php_binary' => env('LMS_PHP_BINARY', 'C:\\xampp\\php\\php.exe'),
+        // Public "watch the masterclass" page (simulated-live daily showing).
+        // WhatsApped + emailed to every lead the moment they turn Interested.
+        'masterclass_watch_url' => env('LMS_MASTERCLASS_WATCH_URL', 'http://localhost:3000/masterclass/watch'),
+        // Human-readable daily show time for the invite message — keep in sync
+        // with the LMS's FUNNEL_MASTERCLASS_WATCH_TIME (default 20:00).
+        'masterclass_show_time_label' => env('MASTERCLASS_SHOW_TIME_LABEL', '8:00 PM'),
+    ],
+
     'google_drive' => [
         // Path (relative to base_path) to the service-account JSON key file.
         'key_file' => env('GOOGLE_DRIVE_KEY_FILE', 'storage/app/google/service-account.json'),
@@ -63,6 +78,12 @@ return [
         'default_country_code' => env('WHATSAPP_DEFAULT_COUNTRY_CODE', '91'),
         // Shared secret Meta echoes back when verifying the webhook Callback URL.
         'webhook_verify_token' => env('WHATSAPP_WEBHOOK_VERIFY_TOKEN'),
+        // Meta-approved template names (business-initiated messages outside the
+        // 24h session window). Sends fall back to session text until approved.
+        'templates' => [
+            'masterclass_invite' => env('WA_TPL_MASTERCLASS_INVITE', 'bj_masterclass_invite'),
+            'masterclass_followup' => env('WA_TPL_MASTERCLASS_FOLLOWUP', 'bj_masterclass_followup'),
+        ],
     ],
 
     'linkedin' => [

@@ -6,10 +6,14 @@ use App\Models\Lead;
 use App\Models\LeadCall;
 use App\Models\LeadStatus;
 use App\Models\LeadStatusHistory;
+use App\Models\Lms\Batch as LmsBatch;
+use App\Models\Lms\Course;
 use App\Models\User;
 use App\Services\AiLeadAnalysisService;
 use App\Services\CallerDigitalService;
 use App\Services\LeadService;
+use App\Services\LmsCommandRunner;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -17,15 +21,21 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class LeadController extends Controller
 {
-    /** Roles that can be assigned a lead by an HR Manager. */
-    private const HR_ASSIGNABLE_ROLES = ['HR', 'HR_TEAM_LEAD', 'HR_ADMIN', 'HR_MANAGER'];
+    /**
+     * Roles that actually call leads, so these are the only people a lead may
+     * be assigned to and the only ones measured on the HR Performance board.
+     * HR_MANAGER is deliberately NOT here: the manager supervises the callers,
+     * they do not carry a lead list themselves.
+     */
+    private const HR_ASSIGNABLE_ROLES = ['HR', 'HR_TEAM_LEAD', 'HR_ADMIN'];
 
-    /** Roles allowed to assign leads. */
+    /** Roles allowed to assign leads (they hand work out, they don't receive it). */
     private const CAN_ASSIGN_ROLES = ['SUPER_ADMIN', 'ADMIN', 'HEAD_OF_OPERATIONS', 'HR_MANAGER'];
 
     public function __construct(private LeadService $leads) {}
@@ -226,6 +236,20 @@ class LeadController extends Controller
 
         $lead->load(['status', 'assignee', 'assignedBy', 'creator', 'calls.initiatedBy', 'statusHistory.status', 'statusHistory.changedBy']);
 
+        // Course catalogue + active batches from the LMS for the "interested
+        // course" picker and the manual "Allocate to Batch" card.
+        // Best-effort: the page still works if the LMS DB is down.
+        try {
+            $lmsCourses = Course::query()->orderBy('name')->get(['slug', 'name']);
+            $lmsBatches = LmsBatch::query()->with('course')
+                ->where('status', 'active')
+                ->orderBy('type')->orderByDesc('starts_on')
+                ->get(['id', 'number', 'type', 'course_id', 'starts_on']);
+        } catch (QueryException|\PDOException) {
+            $lmsCourses = collect();
+            $lmsBatches = collect();
+        }
+
         return view('leads.show', [
             'lead' => $lead,
             'statuses' => LeadStatus::orderBy('sort_order')->get(),
@@ -234,7 +258,68 @@ class LeadController extends Controller
             'callConfigured' => app(CallerDigitalService::class)->isConfigured(),
             'aiProviders' => app(AiLeadAnalysisService::class)->configuredProviders(),
             'aiAnalyses' => $lead->aiAnalyses()->with('requestedBy')->take(5)->get(),
+            'lmsCourses' => $lmsCourses,
+            'lmsBatches' => $lmsBatches,
         ]);
+    }
+
+    /**
+     * The manual conversion moment: HR allocates the lead into an LMS batch.
+     * The LMS finds-or-creates the student account, seats them, and sends the
+     * batch number + login credentials; the lead is then marked Joined.
+     */
+    public function allocateToBatch(Request $request, Lead $lead, LmsCommandRunner $lms): RedirectResponse
+    {
+        $validated = $request->validate(['lms_batch_id' => 'required|integer']);
+
+        try {
+            $batch = LmsBatch::query()->with('course')->findOrFail($validated['lms_batch_id']);
+        } catch (QueryException|\PDOException) {
+            return back()->with('error', 'The LMS database is not reachable right now — try again shortly.');
+        }
+
+        $args = [
+            'batch:add-student',
+            (string) $batch->id,
+            $lead->displayName(),
+            '--status=enrolled',
+            '--credentials',
+            '--phone='.$lead->mobile,
+        ];
+        if (filled($lead->email)) {
+            $args[] = '--email='.$lead->email;
+        }
+
+        $result = $lms->run($args);
+
+        if (! $result['ok']) {
+            return back()->with('error', 'Could not allocate: '.mb_substr($result['output'], 0, 300));
+        }
+
+        $lead->forceFill(['allocated_batch_number' => $batch->number])->save();
+        $this->leads->markJoined($lead, "Allocated to LMS batch {$batch->number} ({$batch->course?->name}) — student account created, OTP sign-in link sent.");
+
+        return back()->with('success', "Lead moved into batch {$batch->number} — student account created; batch number + sign-in link sent on WhatsApp + email (OTP login, no password).");
+    }
+
+    /**
+     * Set which course the lead is interested in. If the lead is already
+     * Interested, the LMS handoff runs immediately so the next weekend
+     * masterclass for that course seats them.
+     */
+    public function updateCourse(Request $request, Lead $lead): RedirectResponse
+    {
+        $validated = $request->validate([
+            'interested_course_slug' => 'nullable|string|max:255',
+        ]);
+
+        $lead->update(['interested_course_slug' => $validated['interested_course_slug'] ?: null]);
+
+        if ($lead->fresh()->status?->slug === 'interested') {
+            $this->leads->pushInterestedToLms($lead->fresh());
+        }
+
+        return back()->with('success', 'Interested course saved.');
     }
 
     /**
@@ -270,13 +355,27 @@ class LeadController extends Controller
     }
 
     /**
-     * HR Manager assigns the lead to an HR-role user.
+     * HR Manager assigns the lead to one of the calling roles. The target is
+     * re-checked here, not just filtered in the dropdown — otherwise a hand-made
+     * request could park a lead on someone who never calls (a manager, a
+     * trainer, an accountant) and it would sit there unworked.
      */
     public function assign(Request $request, Lead $lead): RedirectResponse
     {
         abort_unless(in_array($this->roleCode(), self::CAN_ASSIGN_ROLES, true), 403);
 
-        $validated = $request->validate(['assigned_to_user_id' => 'required|exists:users,id']);
+        $validated = $request->validate([
+            'assigned_to_user_id' => [
+                'required',
+                Rule::exists('users', 'id')->where('is_active', true),
+                function (string $attribute, mixed $value, callable $fail) {
+                    $code = User::find($value)?->role?->role_code;
+                    if (! in_array($code, self::HR_ASSIGNABLE_ROLES, true)) {
+                        $fail('Leads can only be assigned to a calling HR role — managers supervise, they do not carry a lead list.');
+                    }
+                },
+            ],
+        ]);
 
         $lead->update([
             'assigned_to_user_id' => $validated['assigned_to_user_id'],
@@ -317,6 +416,13 @@ class LeadController extends Controller
             'changed_by_user_id' => Auth::id(),
             'remarks' => $validated['remarks'] ?? null,
         ]);
+
+        // Interested candidates get the masterclass watch link right away
+        // (WhatsApp + email) and appear on the LMS Batch Funnel page — batch
+        // allocation itself stays manual (the "Allocate to Batch" card).
+        if ($lead->fresh()->status?->slug === 'interested') {
+            $this->leads->handleInterested($lead->fresh());
+        }
 
         return back()->with('success', 'Status updated.');
     }

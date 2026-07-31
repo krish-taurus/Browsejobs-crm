@@ -9,7 +9,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Lead extends Model
 {
     protected $fillable = [
-        'mobile', 'name', 'email', 'source', 'campaign_name',
+        'mobile', 'name', 'email', 'source', 'campaign_name', 'interested_course_slug', 'lms_lead_id',
+        'masterclass_link_sent_at', 'masterclass_followup_at', 'allocated_batch_number',
         'added_by_user_id', 'current_status_id',
         'assigned_to_user_id', 'assigned_by_user_id', 'assigned_at',
     ];
@@ -18,6 +19,8 @@ class Lead extends Model
     {
         return [
             'assigned_at' => 'datetime',
+            'masterclass_link_sent_at' => 'datetime',
+            'masterclass_followup_at' => 'datetime',
         ];
     }
 

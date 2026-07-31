@@ -2,41 +2,57 @@
 
 use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\Auth\LoginController;
+use App\Http\Controllers\BatchFunnelController;
 use App\Http\Controllers\CalendarController;
 use App\Http\Controllers\CallerDigitalWebhookController;
 use App\Http\Controllers\CampaignController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\ClassAttendanceController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EmailController;
 use App\Http\Controllers\ExpenseAnalyticsController;
 use App\Http\Controllers\ExpenseController;
+use App\Http\Controllers\FeeCollectionController;
 use App\Http\Controllers\FileManagerController;
 use App\Http\Controllers\FinanceController;
+use App\Http\Controllers\GradingController;
 use App\Http\Controllers\HolidayController;
 use App\Http\Controllers\IncentiveController;
 use App\Http\Controllers\LeadController;
+use App\Http\Controllers\LeadsDashboardController;
 use App\Http\Controllers\LeaveRequestController;
 use App\Http\Controllers\LeaveTypeController;
+use App\Http\Controllers\LiveBatchController;
 use App\Http\Controllers\LoginReminderController;
 use App\Http\Controllers\MaintenanceController;
+use App\Http\Controllers\MasterclassController;
 use App\Http\Controllers\MeetingReportController;
+use App\Http\Controllers\MentorManagementController;
 use App\Http\Controllers\MenuItemController;
 use App\Http\Controllers\MilestoneController;
+use App\Http\Controllers\MockTestResultController;
 use App\Http\Controllers\NotesController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PermissionController;
 use App\Http\Controllers\PushSubscriptionController;
+use App\Http\Controllers\RevenueDashboardController;
 use App\Http\Controllers\RolePermissionController;
+use App\Http\Controllers\SitePagesController;
+use App\Http\Controllers\SiteSeoController;
 use App\Http\Controllers\SocialAccountController;
 use App\Http\Controllers\SocialAlertController;
 use App\Http\Controllers\SocialAnalyticsController;
 use App\Http\Controllers\SocialDashboardController;
 use App\Http\Controllers\StudentController;
+use App\Http\Controllers\StudentPulseController;
+use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\TodoController;
 use App\Http\Controllers\UserManagementController;
+use App\Http\Controllers\WebsiteContentController;
 use App\Http\Controllers\WhatsAppWebhookController;
+use App\Http\Controllers\WhitelabelController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -179,6 +195,76 @@ Route::middleware(['auth'])->group(function () {
     Route::get('students', [StudentController::class, 'index'])->name('students.index');
     Route::get('students/{student}', [StudentController::class, 'show'])->name('students.show');
 
+    // ---- Student Management (reads the BrowseJobs LMS database, read-only) ----
+    Route::get('live-batches', [LiveBatchController::class, 'index'])->name('live-batches.index');
+    Route::get('live-batches/{batch}', [LiveBatchController::class, 'show'])->name('live-batches.show');
+    Route::get('live-batches/{batch}/students/{user}', [LiveBatchController::class, 'student'])->name('live-batches.student');
+    Route::post('live-batches', [LiveBatchController::class, 'storeBatch'])->name('live-batches.store');
+    Route::patch('live-batches/{batch}', [LiveBatchController::class, 'updateBatch'])->name('live-batches.update');
+    Route::patch('live-batches/course-fee/{course}', [LiveBatchController::class, 'updateCourseFee'])->name('live-batches.course-fee');
+    Route::post('live-batches/{batch}/announce', [LiveBatchController::class, 'announce'])->name('live-batches.announce');
+    Route::post('live-batches/{batch}/students', [LiveBatchController::class, 'addStudent'])->name('live-batches.students.store');
+    Route::patch('live-batches/{batch}/students/{user}/status', [LiveBatchController::class, 'memberStatus'])->name('live-batches.students.status');
+    Route::patch('live-batches/{batch}/students/{user}/profile', [LiveBatchController::class, 'updateStudentProfile'])->name('live-batches.students.profile');
+    Route::delete('live-batches/{batch}/students/{user}', [LiveBatchController::class, 'removeStudent'])->name('live-batches.students.destroy');
+    Route::post('live-batches/{batch}/classes', [LiveBatchController::class, 'scheduleClass'])->name('live-batches.classes.store');
+    Route::post('live-batches/{batch}/class-series', [LiveBatchController::class, 'scheduleSeries'])->name('live-batches.classes.series');
+    Route::patch('live-batches/{batch}/classes/{session}/schedule', [LiveBatchController::class, 'rescheduleClass'])->name('live-batches.classes.reschedule');
+    Route::delete('live-batches/{batch}/classes/{session}', [LiveBatchController::class, 'cancelClass'])->name('live-batches.classes.cancel');
+    Route::post('live-batches/{batch}/classes/{session}/recording', [LiveBatchController::class, 'setRecording'])->name('live-batches.classes.recording');
+    Route::get('masterclasses', [MasterclassController::class, 'index'])->name('masterclasses.index');
+    Route::post('masterclasses', [MasterclassController::class, 'store'])->name('masterclasses.store');
+    Route::post('masterclasses/recording', [MasterclassController::class, 'setVideo'])->name('masterclasses.video');
+    Route::patch('masterclasses/{batch}/schedule', [MasterclassController::class, 'reschedule'])->name('masterclasses.reschedule');
+    Route::delete('masterclasses/{batch}', [MasterclassController::class, 'cancel'])->name('masterclasses.cancel');
+    Route::get('class-attendance', [ClassAttendanceController::class, 'index'])->name('class-attendance.index');
+    Route::get('class-attendance/{session}', [ClassAttendanceController::class, 'show'])->name('class-attendance.show');
+    Route::post('class-attendance/{session}/mark', [ClassAttendanceController::class, 'mark'])->name('class-attendance.mark');
+    Route::get('mock-test-results', [MockTestResultController::class, 'index'])->name('mock-test-results.index');
+    Route::patch('mock-test-results/pricing/{product}', [MockTestResultController::class, 'updatePricing'])->name('mock-test-results.pricing');
+    Route::get('fee-collections', [FeeCollectionController::class, 'index'])->name('fee-collections.index');
+    Route::post('fee-collections/{instalment}/send-link', [FeeCollectionController::class, 'sendLink'])->name('fee-collections.send-link');
+    Route::post('fee-collections/sync', [FeeCollectionController::class, 'syncPayments'])->name('fee-collections.sync');
+    Route::get('grading', [GradingController::class, 'index'])->name('grading.index');
+    Route::post('grading/assignments', [GradingController::class, 'storeAssignment'])->name('grading.assignments.store');
+    Route::post('grading/submissions/{submission}/grade', [GradingController::class, 'gradeSubmission'])->name('grading.grade');
+    Route::post('grading/grades/{grade}/release', [GradingController::class, 'releaseGrade'])->name('grading.release');
+    Route::get('support-tickets', [SupportTicketController::class, 'index'])->name('support-tickets.index');
+    Route::get('support-tickets/{ticket}', [SupportTicketController::class, 'show'])->name('support-tickets.show');
+    Route::post('support-tickets/{ticket}/reply', [SupportTicketController::class, 'reply'])->name('support-tickets.reply');
+    Route::post('support-tickets/{ticket}/status', [SupportTicketController::class, 'status'])->name('support-tickets.status');
+    Route::get('whitelabel', [WhitelabelController::class, 'index'])->name('whitelabel.index');
+    Route::patch('whitelabel/{tenant}', [WhitelabelController::class, 'update'])->name('whitelabel.update');
+    Route::get('leads-dashboard', [LeadsDashboardController::class, 'index'])->name('leads-dashboard.index');
+    Route::get('revenue-summary-dashboard', [RevenueDashboardController::class, 'index'])->name('revenue-dashboard.index');
+    Route::get('website-content', [WebsiteContentController::class, 'index'])->name('website-content.index');
+    Route::post('website-content/section', [WebsiteContentController::class, 'updateSection'])->name('website-content.section');
+    Route::post('website-content/reset', [WebsiteContentController::class, 'resetSection'])->name('website-content.reset');
+    Route::get('website-pages', [SitePagesController::class, 'index'])->name('site-pages.index');
+    Route::get('website-pages/edit', [SitePagesController::class, 'edit'])->name('site-pages.edit');
+    Route::post('website-pages', [SitePagesController::class, 'update'])->name('site-pages.update');
+    Route::post('website-pages/course', [SitePagesController::class, 'updateCourse'])->name('site-pages.update-course');
+    Route::get('website-seo', [SiteSeoController::class, 'index'])->name('site-seo.index');
+    Route::get('website-seo/edit', [SiteSeoController::class, 'edit'])->name('site-seo.edit');
+    Route::post('website-seo', [SiteSeoController::class, 'update'])->name('site-seo.update');
+    // Student Pulse curation — the three sections of the students' Pulse page.
+    Route::get('student-pulse', [StudentPulseController::class, 'index'])->name('student-pulse.index');
+    Route::post('student-pulse/items', [StudentPulseController::class, 'storeItem'])->name('student-pulse.items.store');
+    Route::delete('student-pulse/items/{item}', [StudentPulseController::class, 'destroyItem'])->name('student-pulse.items.destroy')->whereNumber('item');
+    Route::post('student-pulse/generate', [StudentPulseController::class, 'generateDigest'])->name('student-pulse.generate');
+    Route::post('student-pulse/content', [StudentPulseController::class, 'storeContent'])->name('student-pulse.content.store');
+    Route::delete('student-pulse/content/{item}', [StudentPulseController::class, 'destroyContent'])->name('student-pulse.content.destroy')->whereNumber('item');
+    Route::post('student-pulse/celebrations', [StudentPulseController::class, 'storeCelebration'])->name('student-pulse.celebrations.store');
+    Route::post('student-pulse/celebrations/{celebration}/publish', [StudentPulseController::class, 'publishCelebration'])->name('student-pulse.celebrations.publish')->whereNumber('celebration');
+    Route::post('student-pulse/celebrations/{celebration}/unpublish', [StudentPulseController::class, 'unpublishCelebration'])->name('student-pulse.celebrations.unpublish')->whereNumber('celebration');
+
+    Route::get('mentors', [MentorManagementController::class, 'index'])->name('mentors.index');
+    Route::post('mentors', [MentorManagementController::class, 'store'])->name('mentors.store');
+    Route::post('mentors/{mentor}/slots', [MentorManagementController::class, 'setSlots'])->name('mentors.slots');
+    Route::get('batch-funnel', [BatchFunnelController::class, 'index'])->name('batch-funnel.index');
+    Route::post('batch-funnel/run', [BatchFunnelController::class, 'run'])->name('batch-funnel.run');
+    Route::patch('batch-funnel/leads/{lmsLead}/course', [BatchFunnelController::class, 'assignCourse'])->name('batch-funnel.assign-course');
+
     // ---- Notes ----
     Route::get('notes', [NotesController::class, 'index'])->name('notes.index');
     Route::post('notes', [NotesController::class, 'store'])->name('notes.store');
@@ -230,6 +316,8 @@ Route::middleware(['auth'])->group(function () {
         Route::get('leads/{lead}', [LeadController::class, 'show'])->name('leads.show')->whereNumber('lead');
         Route::post('leads/{lead}/assign', [LeadController::class, 'assign'])->name('leads.assign')->whereNumber('lead');
         Route::patch('leads/{lead}/status', [LeadController::class, 'updateStatus'])->name('leads.status')->whereNumber('lead');
+        Route::patch('leads/{lead}/course', [LeadController::class, 'updateCourse'])->name('leads.course')->whereNumber('lead');
+        Route::post('leads/{lead}/allocate-batch', [LeadController::class, 'allocateToBatch'])->name('leads.allocate-batch')->whereNumber('lead');
         Route::post('leads/{lead}/ai-call', [LeadController::class, 'triggerAiCall'])->name('leads.ai-call')->whereNumber('lead');
         Route::post('leads/{lead}/ai-analysis', [LeadController::class, 'analyzeWithAi'])->name('leads.ai-analysis')->whereNumber('lead');
         Route::post('leads/{lead}/manual-call', [LeadController::class, 'storeManualCall'])->name('leads.manual-call')->whereNumber('lead');
@@ -300,18 +388,13 @@ Route::middleware(['auth'])->group(function () {
         'cities' => 'Cities',
         'testimonials' => 'Testimonials',
         'faq' => 'FAQ',
-        'leads-dashboard' => 'Leads Dashboard',
-        'revenue-summary-dashboard' => 'Revenue Summary',
+
         'growth-dashboard' => 'Growth Dashboard',
         'email-engagement' => 'Email Engagement',
         'company-reports' => 'Company Report',
         'revenue-report' => 'Revenue Report',
         'attendance-summary-report' => 'Attendance Summary',
         'leave-balance-summary-report' => 'Leave Balance Summary',
-        'masterclasses' => 'Masterclass',
-        'live-batches' => 'Live Batches',
-        'class-attendance' => 'Class Attendance',
-        'mock-test-results' => 'Mock Test Result',
     ];
 
     foreach ($underMaintenance as $slug => $title) {

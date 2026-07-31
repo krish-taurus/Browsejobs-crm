@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Lms\BatchMember;
+use App\Models\Lms\LmsUser;
 use App\Models\Student;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
@@ -28,6 +31,30 @@ class StudentController extends Controller
 
     public function show(Student $student): View
     {
-        return view('students.show', compact('student'));
+        // Match this CRM record to an LMS account by email/phone so the profile
+        // can show batch enrolments. Best-effort: if the LMS DB is down, the
+        // profile still renders without the LMS section.
+        $lmsUser = null;
+        $lmsMemberships = collect();
+
+        try {
+            $lmsUser = LmsUser::query()
+                ->where(function ($q) use ($student) {
+                    $q->when($student->email, fn ($u) => $u->orWhere('email', $student->email))
+                        ->when($student->phone_number, fn ($u) => $u->orWhere('phone', $student->phone_number));
+                })
+                ->when(! $student->email && ! $student->phone_number, fn ($q) => $q->whereRaw('1 = 0'))
+                ->first();
+
+            if ($lmsUser) {
+                $lmsMemberships = BatchMember::with('batch.course')
+                    ->where('user_id', $lmsUser->id)
+                    ->get();
+            }
+        } catch (QueryException|\PDOException $e) {
+            report($e);
+        }
+
+        return view('students.show', compact('student', 'lmsUser', 'lmsMemberships'));
     }
 }

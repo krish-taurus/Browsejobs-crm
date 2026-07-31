@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Sleep;
 use RuntimeException;
 
 /**
@@ -116,6 +117,20 @@ class CallerDigitalService
         // A 401 likely means the cached token expired — refresh once and retry.
         if ($response->status() === 401) {
             Cache::forget(self::TOKEN_CACHE_KEY);
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer '.$this->accessToken(),
+                'X-API-Key' => config('services.caller_digital.api_key'),
+            ])->{$method}($url, $body);
+        }
+
+        // Rate-limited (bursts of imported leads dial back-to-back): wait the
+        // interval the API asks for, then retry once instead of failing the call.
+        if ($response->status() === 429) {
+            $retryAfter = (int) (data_get($response->json(), 'detail.retry_after')
+                ?? $response->header('Retry-After')
+                ?? 3);
+            Sleep::for(min(10, max(1, $retryAfter)))->seconds();
+
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer '.$this->accessToken(),
                 'X-API-Key' => config('services.caller_digital.api_key'),

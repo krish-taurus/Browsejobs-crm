@@ -18,6 +18,9 @@ class AutoCallNewLeads extends Command
 
     protected $description = 'Place AI calls for New-status leads that have no AI call yet.';
 
+    /** Give up on a lead after this many API-level failures (rate limits, outages). */
+    private const MAX_API_RETRIES = 3;
+
     public function handle(LeadService $leads, CallerDigitalService $caller): int
     {
         if (! config('services.caller_digital.auto_call')) {
@@ -32,8 +35,17 @@ class AutoCallNewLeads extends Command
             return self::SUCCESS;
         }
 
+        // Eligible: New-status leads with no AI call at all, OR whose only AI
+        // calls died before reaching the provider (no campaign id — e.g. the
+        // API rate-limited the request). Anything that actually dialled once
+        // (got a campaign id, or ended completed/no_answer/busy) is excluded.
         $pending = Lead::whereHas('status', fn ($q) => $q->where('slug', 'new'))
-            ->whereDoesntHave('calls', fn ($q) => $q->where('type', 'ai'))
+            ->whereDoesntHave('calls', function ($q) {
+                $q->where('type', 'ai')->where(function ($q) {
+                    $q->whereNotNull('external_campaign_id')
+                        ->orWhere('status', '!=', 'failed');
+                });
+            })
             ->where('created_at', '>=', now()->subDays(7))
             ->orderBy('id')
             ->limit((int) $this->option('limit'))
@@ -49,6 +61,25 @@ class AutoCallNewLeads extends Command
             if ($leads->aiCallCapReached()) {
                 $this->warn('Daily AI-call cap reached — remaining leads will be tried tomorrow.');
                 break;
+            }
+
+            if ($leads->candidateAlreadyAiCalled($lead)) {
+                $this->line("Lead #{$lead->id} ({$lead->displayName()}): skipped — this number already completed an AI call.");
+
+                continue;
+            }
+
+            // Retry API-level failures at most 3 times, at least 10 minutes apart.
+            $failedAttempts = $lead->calls()->where('type', 'ai')->count();
+
+            if ($failedAttempts >= self::MAX_API_RETRIES) {
+                $this->line("Lead #{$lead->id} ({$lead->displayName()}): skipped — {$failedAttempts} failed call attempts, needs a human.");
+
+                continue;
+            }
+
+            if ($failedAttempts > 0 && $lead->calls()->where('type', 'ai')->max('started_at') > now()->subMinutes(10)) {
+                continue; // too soon to retry — next scheduled run will pick it up
             }
 
             $call = $leads->triggerAiCall($lead, null);

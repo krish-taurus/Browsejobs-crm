@@ -25,6 +25,7 @@ return new class extends Migration
                 ->nullOnDelete();                  // required only when status = Lost (enforce in app logic)
 
             $table->foreignId('changed_by_user_id')
+                ->nullable()                        // null = system change (AI call outcome)
                 ->constrained('users')
                 ->cascadeOnDelete();                // HR Executive who made the change
 
