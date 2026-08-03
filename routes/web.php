@@ -54,11 +54,16 @@ use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\WebsiteContentController;
 use App\Http\Controllers\WhatsAppWebhookController;
 use App\Http\Controllers\WhitelabelController;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
+// The CRM root is not a landing page — crm.browsejobs.ai is a staff tool, so
+// send people where they were going: the dashboard if signed in, otherwise the
+// login screen. (This used to render Laravel's stock welcome page, which
+// exposed the framework version and a dead "Deploy now" button to anyone.)
 Route::get('/', function () {
-    return view('welcome');
-});
+    return redirect()->route(Auth::check() ? 'dashboard' : 'login.show');
+})->name('home');
 
 Route::get('/login', [LoginController::class, 'loginForm'])->name('login.show');
 Route::post('/login', [LoginController::class, 'login'])->name('login');
