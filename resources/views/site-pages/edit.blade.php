@@ -24,7 +24,7 @@
 		</div>
 		<div class="d-flex gap-2">
 			<a href="{{ route('site-seo.edit', ['path' => $path]) }}" class="btn btn-light"><i class="ti ti-search me-1"></i>Edit SEO</a>
-			<a href="{{ \App\Http\Controllers\SitePagesController::SITE_URL . $path }}" target="_blank" class="btn btn-light">View live page <i class="ti ti-external-link ms-1"></i></a>
+			<a href="{{ config('services.lms.site_url').$path }}" target="_blank" class="btn btn-light">View live page <i class="ti ti-external-link ms-1"></i></a>
 		</div>
 	</div>
 

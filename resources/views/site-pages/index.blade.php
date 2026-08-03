@@ -51,7 +51,7 @@
 								<a href="{{ route('site-pages.edit', ['path' => $page['path']]) }}" class="btn btn-sm btn-primary flex-grow-1"><i class="ti ti-pencil me-1"></i>Edit content</a>
 							@endif
 							<a href="{{ route('site-seo.edit', ['path' => $page['path']]) }}" class="btn btn-sm btn-light" title="Edit SEO"><i class="ti ti-search"></i></a>
-							<a href="{{ \App\Http\Controllers\SitePagesController::SITE_URL . $page['path'] }}" target="_blank" class="btn btn-sm btn-light" title="View live page"><i class="ti ti-external-link"></i></a>
+							<a href="{{ config('services.lms.site_url').$page['path'] }}" target="_blank" class="btn btn-sm btn-light" title="View live page"><i class="ti ti-external-link"></i></a>
 						</div>
 					</div>
 				</div>

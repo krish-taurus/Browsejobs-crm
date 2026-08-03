@@ -11,7 +11,7 @@
 		</div>
 		<div class="d-flex gap-2">
 			<button type="button" class="btn btn-light" id="expand-all"><i class="ti ti-arrows-maximize me-1"></i>Expand all</button>
-			<a href="http://localhost:3000/" target="_blank" class="btn btn-light">View site <i class="ti ti-external-link ms-1"></i></a>
+			<a href="{{ config('services.lms.site_url') }}/" target="_blank" class="btn btn-light">View site <i class="ti ti-external-link ms-1"></i></a>
 		</div>
 	</div>
 

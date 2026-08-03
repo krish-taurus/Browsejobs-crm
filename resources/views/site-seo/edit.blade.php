@@ -13,7 +13,7 @@
 			@endif
 		</div>
 		@if ($path !== '')
-			<a href="{{ \App\Http\Controllers\SitePagesController::SITE_URL . $path }}" target="_blank" class="btn btn-light">View live page <i class="ti ti-external-link ms-1"></i></a>
+			<a href="{{ config('services.lms.site_url').$path }}" target="_blank" class="btn btn-light">View live page <i class="ti ti-external-link ms-1"></i></a>
 		@endif
 	</div>
 

@@ -9,7 +9,7 @@
 			<h4 class="mb-0">Student Pulse</h4>
 			<span class="text-muted fs-13">Everything on the students' Pulse page is curated here — it stays empty until you add something</span>
 		</div>
-		<a href="http://localhost:3000/pulse" target="_blank" class="btn btn-light">View student page <i class="ti ti-external-link ms-1"></i></a>
+		<a href="{{ config('services.lms.site_url') }}/pulse" target="_blank" class="btn btn-light">View student page <i class="ti ti-external-link ms-1"></i></a>
 	</div>
 
 	@if (session('success'))

@@ -17,6 +17,7 @@ use App\Http\Controllers\FileManagerController;
 use App\Http\Controllers\FinanceController;
 use App\Http\Controllers\GradingController;
 use App\Http\Controllers\HolidayController;
+use App\Http\Controllers\HowItWorksController;
 use App\Http\Controllers\IncentiveController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\LeadsDashboardController;
@@ -247,6 +248,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('website-seo', [SiteSeoController::class, 'index'])->name('site-seo.index');
     Route::get('website-seo/edit', [SiteSeoController::class, 'edit'])->name('site-seo.edit');
     Route::post('website-seo', [SiteSeoController::class, 'update'])->name('site-seo.update');
+    // Plain-language explanation of the whole system — no permission gate, so
+    // every logged-in user can read how their own work fits together.
+    Route::get('how-it-works', [HowItWorksController::class, 'index'])->name('how-it-works.index');
+
     // Student Pulse curation — the three sections of the students' Pulse page.
     Route::get('student-pulse', [StudentPulseController::class, 'index'])->name('student-pulse.index');
     Route::post('student-pulse/items', [StudentPulseController::class, 'storeItem'])->name('student-pulse.items.store');

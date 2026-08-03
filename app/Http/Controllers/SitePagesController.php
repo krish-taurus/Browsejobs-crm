@@ -21,7 +21,15 @@ class SitePagesController extends Controller
 {
     use ListsPublicSitePages, ReadsLmsDatabase;
 
-    public const SITE_URL = 'http://localhost:3000';
+    /**
+     * The public site's base URL, from config so production points at the real
+     * domain. Was a hardcoded localhost constant, which would have shipped
+     * "View live page" links to localhost for every member of staff.
+     */
+    public static function siteUrl(string $path = ''): string
+    {
+        return config('services.lms.site_url').$path;
+    }
 
     public function index(): View
     {
@@ -122,7 +130,7 @@ class SitePagesController extends Controller
     private function scrapeLiveContent(string $path): string
     {
         try {
-            $html = Http::timeout(10)->get(self::SITE_URL.$path)->body();
+            $html = Http::timeout(10)->get(self::siteUrl($path))->body();
         } catch (\Throwable) {
             return '';
         }

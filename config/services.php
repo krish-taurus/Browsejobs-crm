@@ -47,9 +47,14 @@ return [
         // CLI php executable. PHP_BINARY is Apache's binary in web requests,
         // so the CLI path must be explicit (or discoverable on PATH).
         'php_binary' => env('LMS_PHP_BINARY', 'C:\\xampp\\php\\php.exe'),
+        // The public student-facing website. Every "View live page" link and the
+        // page-scraper that prefills the rich-text editor build on this, so it
+        // MUST be the real domain in production or the CRM will link staff to
+        // localhost and silently fail to load existing page copy.
+        'site_url' => rtrim((string) env('LMS_SITE_URL', 'http://localhost:3000'), '/'),
         // Public "watch the masterclass" page (simulated-live daily showing).
         // WhatsApped + emailed to every lead the moment they turn Interested.
-        'masterclass_watch_url' => env('LMS_MASTERCLASS_WATCH_URL', 'http://localhost:3000/masterclass/watch'),
+        'masterclass_watch_url' => env('LMS_MASTERCLASS_WATCH_URL', rtrim((string) env('LMS_SITE_URL', 'http://localhost:3000'), '/').'/masterclass/watch'),
         // Human-readable daily show time for the invite message — keep in sync
         // with the LMS's FUNNEL_MASTERCLASS_WATCH_TIME (default 20:00).
         'masterclass_show_time_label' => env('MASTERCLASS_SHOW_TIME_LABEL', '8:00 PM'),
