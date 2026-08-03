@@ -8,3 +8,9 @@ A_____CRM.zip
 /storage/logs/*
 /public/storage
 B___CRM.zip
+
+# Full database dumps contain staff/student emails, phone numbers and password
+# hashes. Never commit one to a public repo — use database/schema.sql (structure
+# + reference data only) and move real data to the server out-of-band.
+/database/browsejobsbackendlaravel.sql
+/database/*_full.sql
