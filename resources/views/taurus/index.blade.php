@@ -98,6 +98,31 @@
 		.taurus-console .tc-say:hover { color: var(--tc-mint); border-color: var(--tc-green); }
 		.taurus-console .tc-briefbox .tc-bt { font-size: 13.5px; color: #c4d4f1; min-height: 20px; white-space: pre-wrap; }
 		.taurus-console .tc-caret { display: inline-block; width: 7px; height: 14px; background: var(--tc-sky); vertical-align: -2px; animation: tc-pulse 1s steps(2) infinite; }
+		.taurus-console .tc-hint { font-family: var(--tc-mono); font-size: 9.5px; letter-spacing: .1em; color: var(--tc-muted); text-align: center; }
+		.taurus-console .tc-hint b { color: var(--tc-sky); font-weight: 500; }
+
+		/* conversation transcript */
+		.taurus-console .tc-log { max-height: 260px; overflow-y: auto; margin-bottom: 10px; }
+		.taurus-console .tc-log:empty { display: none; }
+		.taurus-console .tc-turn { font-size: 12.5px; margin-bottom: 9px; white-space: pre-wrap; }
+		.taurus-console .tc-turn .tc-who2 { font-family: var(--tc-mono); font-size: 8.5px; letter-spacing: .2em; display: block; margin-bottom: 2px; }
+		.taurus-console .tc-turn.tc-me .tc-who2 { color: var(--tc-mint); }
+		.taurus-console .tc-turn.tc-it .tc-who2 { color: var(--tc-sky); }
+		.taurus-console .tc-turn.tc-me { color: #9fe3c2; }
+		.taurus-console .tc-turn.tc-it { color: #c4d4f1; }
+		.taurus-console .tc-tools { font-family: var(--tc-mono); font-size: 8.5px; letter-spacing: .12em; color: var(--tc-muted); margin-top: 3px; }
+
+		/* confirmation cards */
+		.taurus-console .tc-confirms:empty { display: none; }
+		.taurus-console .tc-confirm {
+			border: 1px solid rgba(245, 166, 35, .45); background: rgba(245, 166, 35, .07);
+			border-radius: 10px; padding: 11px 13px; margin-top: 10px;
+		}
+		.taurus-console .tc-confirm .tc-ch { font-family: var(--tc-mono); font-size: 8.5px; letter-spacing: .2em; color: var(--tc-amber); margin-bottom: 5px; }
+		.taurus-console .tc-confirm .tc-cs { font-size: 12.5px; color: #f0e2c8; margin-bottom: 9px; }
+		.taurus-console .tc-confirm .tc-cbody { font-size: 12px; color: #c4d4f1; background: rgba(2, 4, 9, .5); border-left: 2px solid var(--tc-amber); border-radius: 0 6px 6px 0; padding: 7px 10px; margin-bottom: 9px; white-space: pre-wrap; }
+		.taurus-console .tc-confirm .tc-cactions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+		.taurus-console .tc-confirm .tc-cnote { font-family: var(--tc-mono); font-size: 8.5px; color: var(--tc-muted); }
 
 		/* section labels */
 		.taurus-console .tc-slab { display: flex; align-items: center; gap: 12px; margin: 22px 0 10px; }
@@ -252,19 +277,26 @@
 				</div>
 				<div class="tc-askrow">
 					<input class="tc-ask" id="tc-ask" autocomplete="off"
-						placeholder="{{ $agentReady ? 'Ask Taurus — “offers this month vs target”, “where am I bleeding money”' : 'Agent offline — add an AI provider key to .env' }}"
+						placeholder="{{ $agentReady ? 'Ask, or tell Taurus to do something — “message Meera about the DevOps batch”' : 'Agent offline — add ANTHROPIC_API_KEY to .env' }}"
 						aria-label="Ask Taurus" @disabled(! $agentReady)>
-					<button type="button" class="tc-mic" id="tc-mic" title="Speak to Taurus" aria-label="Speak to Taurus" @disabled(! $agentReady)>🎙</button>
+					<button type="button" class="tc-mic" id="tc-mic" title="Hold a conversation by voice" aria-label="Talk to Taurus" @disabled(! $agentReady)>🎙</button>
 					<button type="button" class="tc-send" id="tc-send" @disabled(! $agentReady)>RUN</button>
+				</div>
+				<div class="tc-hint" id="tc-hint">
+					Click the mic for hands-free — Taurus listens, answers aloud, then listens again.
+					Say <b>“stand down”</b> to stop.
 				</div>
 			</div>
 
-			<section class="tc-briefbox" aria-label="Taurus briefing">
+			<section class="tc-briefbox" aria-label="Conversation with Taurus">
 				<div class="tc-bh">
 					<span class="tc-src" id="tc-briefsrc">TAURUS · BRIEFING</span>
 					<button type="button" class="tc-say" id="tc-say">▶ SPEAK</button>
+					<button type="button" class="tc-say" id="tc-reset" title="Start a fresh conversation">⟲ NEW</button>
 				</div>
+				<div class="tc-log" id="tc-log" aria-live="polite"></div>
 				<div class="tc-bt"><span id="tc-brieftext"></span><span class="tc-caret" id="tc-caret"></span></div>
+				<div class="tc-confirms" id="tc-confirms"></div>
 			</section>
 
 			{{-- ── Placement pipeline ── --}}
@@ -545,10 +577,11 @@
 
 			const ROUTES = {
 				snapshot: @json(route('taurus.snapshot')),
-				ask: @json(route('taurus.ask')),
+				converse: @json(route('taurus.converse')),
 				brief: @json(route('taurus.brief')),
 				analyse: @json(route('taurus.analyse')),
 				actions: @json(route('taurus.actions.queue')),
+				actionBase: @json(url('taurus/actions')),
 				subBase: @json(url('taurus/subscriptions')),
 				targetBase: @json(url('taurus/targets')),
 			};
@@ -584,23 +617,41 @@
 
 			/* ═══════════ voice ═══════════ */
 			const Voice = {
-				on: false, rec: null, listening: false,
+				on: false,          // speak replies aloud
+				handsFree: false,   // keep listening after each reply
+				rec: null,
+				listening: false,
 				pick() {
 					const voices = speechSynthesis.getVoices();
 					return voices.find((v) => v.lang === "en-IN")
 						|| voices.find((v) => /en-GB|en-US/.test(v.lang)) || voices[0];
 				},
-				speak(text) {
-					if (!this.on || !("speechSynthesis" in window)) return;
+				// Spoken text differs from written: currency symbols, "MTD" and
+				// lakh shorthand all read badly through a synthesiser.
+				forSpeech(text) {
+					return String(text)
+						.replace(/₹\s?/g, " rupees ")
+						.replace(/\bMTD\b/g, "month to date")
+						.replace(/\bYTD\b/g, "year to date")
+						.replace(/(\d)\s?L\b/g, "$1 lakh")
+						.replace(/\bCPL\b/g, "cost per lead");
+				},
+				speak(text, onDone) {
+					if (!("speechSynthesis" in window)) { if (onDone) onDone(); return; }
 					speechSynthesis.cancel();
-					const utter = new SpeechSynthesisUtterance(
-						String(text).replace(/₹/g, " rupees ").replace(/\bMTD\b/g, "month to date")
-					);
+					const utter = new SpeechSynthesisUtterance(this.forSpeech(text));
 					const voice = this.pick();
 					if (voice) utter.voice = voice;
 					utter.rate = 1.02;
 					utter.onstart = () => (Brain.mode = "speak");
-					utter.onend = () => (Brain.mode = "idle");
+					utter.onend = () => {
+						Brain.mode = "idle";
+						if (onDone) onDone();
+					};
+					// If synthesis fails we must still hand control back, or
+					// hands-free mode would stall waiting for a reply it never
+					// finishes speaking.
+					utter.onerror = () => { Brain.mode = "idle"; if (onDone) onDone(); };
 					speechSynthesis.speak(utter);
 				},
 				initRec() {
@@ -609,49 +660,104 @@
 					const rec = new SR();
 					rec.lang = "en-IN";
 					rec.interimResults = true;
+					rec.continuous = false;
+
 					rec.onresult = (e) => {
 						let said = "";
 						for (const r of e.results) said += r[0].transcript;
 						$("tc-ask").value = said;
-						if (e.results[e.results.length - 1].isFinal) { rec.stop(); runQuery(); }
+
+						if (!e.results[e.results.length - 1].isFinal) return;
+
+						rec.stop();
+
+						if (/\b(stand down|stop listening|that'?s all|goodbye)\b/i.test(said)) {
+							$("tc-ask").value = "";
+							Voice.setHandsFree(false);
+							Voice.speak("Standing down.");
+							return;
+						}
+
+						runQuery(true);
 					};
+
 					rec.onstart = () => {
-						this.listening = true; Brain.mode = "listen";
+						this.listening = true;
+						Brain.mode = "listen";
 						$("tc-mic").classList.add("tc-live");
 						$("tc-hail").textContent = "TAURUS · LISTENING";
 					};
+
 					rec.onend = () => {
 						this.listening = false;
 						if (Brain.mode === "listen") Brain.mode = "idle";
 						$("tc-mic").classList.remove("tc-live");
-						$("tc-hail").textContent = "TAURUS · SYNAPSES LIVE";
+						if (!BUSY) {
+							$("tc-hail").textContent = this.handsFree ? "TAURUS · HANDS-FREE" : "TAURUS · SYNAPSES LIVE";
+						}
 					};
-					rec.onerror = (e) => typeOut(e.error === "not-allowed"
-						? "Microphone blocked. Voice input needs HTTPS and mic permission for this site."
-						: "Voice input error: " + e.error);
+
+					rec.onerror = (e) => {
+						// "no-speech" and "aborted" are routine in a hands-free
+						// loop (a pause, or our own stop()); don't shout about them.
+						if (e.error === "no-speech" || e.error === "aborted") return;
+						this.setHandsFree(false);
+						typeOut(e.error === "not-allowed"
+							? "Microphone blocked. Voice needs HTTPS and mic permission for this site."
+							: "Voice input error: " + e.error);
+					};
+
 					return rec;
+				},
+				listen() {
+					if (!this.rec) this.rec = this.initRec();
+					if (!this.rec || this.listening || BUSY) return;
+					try { this.rec.start(); } catch (e) { /* already starting */ }
+				},
+				setHandsFree(state) {
+					this.handsFree = state;
+					$("tc-mic").classList.toggle("tc-live", state);
+					if (state) {
+						// Replies must be audible, or hands-free is one-way.
+						this.on = true;
+						syncVoiceToggle();
+						this.listen();
+					} else {
+						if (this.rec && this.listening) this.rec.stop();
+						$("tc-hail").textContent = "TAURUS · SYNAPSES LIVE";
+					}
 				},
 			};
 
+			function syncVoiceToggle() {
+				const btn = $("tc-vtoggle");
+				btn.classList.toggle("tc-on", Voice.on);
+				btn.setAttribute("aria-pressed", String(Voice.on));
+				btn.textContent = "◉ VOICE · " + (Voice.on ? "ON" : "OFF");
+			}
+
 			$("tc-mic").onclick = () => {
 				if (!Voice.rec) Voice.rec = Voice.initRec();
-				if (!Voice.rec) { typeOut("This browser has no speech recognition — try Chrome or Edge. Spoken replies still work."); return; }
-				Voice.listening ? Voice.rec.stop() : Voice.rec.start();
+				if (!Voice.rec) {
+					typeOut("This browser has no speech recognition — try Chrome or Edge. Spoken replies still work.");
+					return;
+				}
+				Voice.setHandsFree(!Voice.handsFree);
 			};
-			$("tc-vtoggle").onclick = (e) => {
+
+			$("tc-vtoggle").onclick = () => {
 				Voice.on = !Voice.on;
-				e.currentTarget.classList.toggle("tc-on", Voice.on);
-				e.currentTarget.setAttribute("aria-pressed", String(Voice.on));
-				e.currentTarget.textContent = "◉ VOICE · " + (Voice.on ? "ON" : "OFF");
-				if (Voice.on) Voice.speak("Taurus online."); else speechSynthesis.cancel();
+				syncVoiceToggle();
+				if (Voice.on) {
+					Voice.speak("Taurus online.");
+				} else {
+					speechSynthesis.cancel();
+					Voice.setHandsFree(false);
+				}
 			};
 			$("tc-say").onclick = () => {
 				const text = $("tc-brieftext").textContent;
-				if (!text) return;
-				const wasOff = !Voice.on;
-				Voice.on = true;
-				Voice.speak(text);
-				if (wasOff) setTimeout(() => (Voice.on = false), 0);
+				if (text) Voice.speak(text);
 			};
 
 			/* ═══════════ the sphere ═══════════ */
@@ -1053,11 +1159,23 @@
 			}
 
 			/* ═══════════ agent I/O ═══════════ */
+			// Hands-free is a loop: listen → answer → speak → listen again. The
+			// hand-back has to happen when speech *finishes*, not when the reply
+			// arrives, or Taurus would hear its own voice.
+			function resumeListening() {
+				if (Voice.handsFree && !BUSY) {
+					setTimeout(() => Voice.listen(), 250);
+				}
+			}
+
 			function typeOut(text, speakIt) {
 				const out = $("tc-brieftext"), caret = $("tc-caret");
 				out.textContent = "";
 				caret.style.display = "inline-block";
-				const done = () => { caret.style.display = "none"; if (speakIt) Voice.speak(text); };
+				const done = () => {
+					caret.style.display = "none";
+					if (speakIt) { Voice.speak(text, resumeListening); } else { resumeListening(); }
+				};
 				if (REDUCE || text.length > 900) { out.textContent = text; done(); return; }
 				let i = 0;
 				const id = setInterval(() => {
@@ -1066,29 +1184,157 @@
 				}, 11);
 			}
 
-			async function runQuery() {
+			/* ═══════════ conversation ═══════════ */
+			// The transcript is held here and posted back each turn, so the
+			// server stays stateless. It is the model's context only — every
+			// tool re-authorises server-side regardless of what is in it.
+			let HISTORY = [];
+			let BUSY = false;
+
+			function logTurn(who, text, tools) {
+				const div = document.createElement("div");
+				div.className = "tc-turn " + (who === "you" ? "tc-me" : "tc-it");
+				const label = document.createElement("span");
+				label.className = "tc-who2";
+				label.textContent = who === "you" ? "YOU" : "TAURUS";
+				div.appendChild(label);
+				div.appendChild(document.createTextNode(text));
+				if (tools && tools.length) {
+					const t = document.createElement("div");
+					t.className = "tc-tools";
+					t.textContent = "▸ read " + tools.join(", ");
+					div.appendChild(t);
+				}
+				$("tc-log").appendChild(div);
+				$("tc-log").scrollTop = $("tc-log").scrollHeight;
+			}
+
+			function renderConfirms(actions) {
+				const wrap = $("tc-confirms");
+				wrap.innerHTML = "";
+				if (!actions || !actions.length) return;
+
+				for (const a of actions) {
+					const card = document.createElement("div");
+					card.className = "tc-confirm";
+
+					const head = document.createElement("div");
+					head.className = "tc-ch";
+					head.textContent = "AWAITING YOUR APPROVAL";
+					card.appendChild(head);
+
+					const summary = document.createElement("div");
+					summary.className = "tc-cs";
+					summary.textContent = a.summary;
+					card.appendChild(summary);
+
+					// For a message, show the exact text that would go out —
+					// approving something you can only see summarised is not
+					// really approving it.
+					if (a.action === "send_message" && a.payload && a.payload.body) {
+						const body = document.createElement("div");
+						body.className = "tc-cbody";
+						body.textContent = a.payload.body;
+						card.appendChild(body);
+					}
+
+					const actionsRow = document.createElement("div");
+					actionsRow.className = "tc-cactions";
+
+					const yes = document.createElement("button");
+					yes.type = "button";
+					yes.className = "tc-approve";
+					yes.textContent = "APPROVE";
+
+					const no = document.createElement("button");
+					no.type = "button";
+					no.className = "tc-dismiss";
+					no.textContent = "DISMISS";
+
+					const note = document.createElement("span");
+					note.className = "tc-cnote";
+					note.textContent = "nothing has happened yet";
+
+					const decide = async (decision) => {
+						yes.disabled = no.disabled = true;
+						note.textContent = "working…";
+						try {
+							const res = await postJson(ROUTES.actionBase + "/" + a.id + "/confirm", { decision });
+							note.textContent = res.message;
+							actionsRow.removeChild(yes);
+							actionsRow.removeChild(no);
+							if (Voice.on) Voice.speak(res.message);
+							refreshSnapshot();
+						} catch (e) {
+							note.textContent = "Failed — " + e.message;
+							yes.disabled = no.disabled = false;
+						}
+					};
+
+					yes.onclick = () => decide("approved");
+					no.onclick = () => decide("dismissed");
+
+					actionsRow.append(yes, no, note);
+					card.appendChild(actionsRow);
+					wrap.appendChild(card);
+				}
+
+				// Voice users can approve without reaching for the mouse.
+				PENDING_DECISION = actions.length ? () => wrap.querySelector(".tc-approve")?.click() : null;
+			}
+
+			let PENDING_DECISION = null;
+
+			async function runQuery(spoken) {
 				const input = $("tc-ask"), btn = $("tc-send");
 				const q = input.value.trim();
-				if (!q || !AGENT_READY) return;
+				if (!q || !AGENT_READY || BUSY) return;
 
+				// "yes" / "confirm" while a card is open approves it rather than
+				// being sent to the model as a fresh question.
+				if (PENDING_DECISION && /^(yes|yeah|approve[d]?|confirm|do it|go ahead|send it)\b/i.test(q)) {
+					input.value = "";
+					PENDING_DECISION();
+					PENDING_DECISION = null;
+					return;
+				}
+
+				BUSY = true;
 				btn.disabled = true;
+				input.value = "";
 				Brain.mode = "speak";
 				$("tc-hail").textContent = "TAURUS · REASONING";
-				$("tc-briefsrc").textContent = "TAURUS · RESPONSE";
+				$("tc-briefsrc").textContent = "TAURUS · CONVERSATION";
+				logTurn("you", q);
+				$("tc-brieftext").textContent = "…";
+				$("tc-caret").style.display = "inline-block";
+				renderConfirms([]);
+
 				try {
-					const data = await postJson(ROUTES.ask, { query: q });
-					typeOut(data.reply, Voice.on);
+					const data = await postJson(ROUTES.converse, { query: q, history: HISTORY });
+					HISTORY = data.history || HISTORY;
+					logTurn("taurus", data.reply, data.tools_used);
+					typeOut(data.reply, Voice.on || spoken);
+					renderConfirms(data.pending_actions);
 				} catch (e) {
 					typeOut("Could not reach Taurus (" + e.message + ").");
 				}
+
+				BUSY = false;
 				btn.disabled = false;
 				Brain.mode = "idle";
-				$("tc-hail").textContent = "TAURUS · SYNAPSES LIVE";
-				input.value = "";
+				$("tc-hail").textContent = Voice.handsFree ? "TAURUS · HANDS-FREE" : "TAURUS · SYNAPSES LIVE";
 			}
 
-			$("tc-send").onclick = runQuery;
-			$("tc-ask").addEventListener("keydown", (e) => { if (e.key === "Enter") runQuery(); });
+			$("tc-send").onclick = () => runQuery(false);
+			$("tc-ask").addEventListener("keydown", (e) => { if (e.key === "Enter") runQuery(false); });
+			$("tc-reset").onclick = () => {
+				HISTORY = [];
+				$("tc-log").innerHTML = "";
+				renderConfirms([]);
+				$("tc-briefsrc").textContent = "TAURUS · BRIEFING";
+				typeOut("Fresh start. What do you need?");
+			};
 
 			async function runPanel(btn, outId, panel) {
 				const out = $(outId), span = out.querySelector("span");
@@ -1127,15 +1373,16 @@
 			if (AGENT_READY) {
 				typeOut("Reading the room…");
 				postJson(ROUTES.brief)
-					.then((d) => typeOut(d.reply))
+					.then((d) => typeOut(d.reply, Voice.on))
 					.catch(() => typeOut("Numbers are live above; the written brief could not be generated."));
 			} else {
-				typeOut("Agent offline — no AI provider key is configured. Every number above is still live from the CRM and LMS.");
+				typeOut("Taurus is offline — ANTHROPIC_API_KEY is not configured. Every number above is still live from the CRM and LMS.");
+				$("tc-hint").textContent = "Voice and conversation need an Anthropic key in .env.";
 			}
 
-			// Poll for fresh numbers. A failed poll marks the link stale rather
-			// than blanking the dashboard — stale data beats no data here.
-			setInterval(async () => {
+			// A failed refresh marks the link stale rather than blanking the
+			// dashboard — stale data beats no data here.
+			async function refreshSnapshot() {
 				try {
 					const res = await fetch(ROUTES.snapshot, { headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" } });
 					if (!res.ok) throw new Error("HTTP " + res.status);
@@ -1147,7 +1394,9 @@
 					$("tc-linkstate").classList.add("tc-stale");
 					$("tc-linktext").textContent = "CORTEX · STALE";
 				}
-			}, REFRESH_SECONDS * 1000);
+			}
+
+			setInterval(refreshSnapshot, REFRESH_SECONDS * 1000);
 		})();
 	</script>
 @endpush

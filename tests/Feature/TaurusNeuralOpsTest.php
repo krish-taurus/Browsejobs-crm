@@ -1,17 +1,22 @@
 <?php
 
+use App\Models\Conversation;
 use App\Models\Expense;
 use App\Models\Lead;
 use App\Models\LeadStatus;
+use App\Models\Message;
 use App\Models\Permission;
 use App\Models\Role;
+use App\Models\Task;
 use App\Models\TaurusAction;
 use App\Models\TaurusSubscription;
 use App\Models\TaurusTarget;
 use App\Models\User;
+use App\Services\Taurus\TaurusToolkit;
 use App\Services\TaurusSnapshotService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
 
@@ -80,7 +85,7 @@ it('guards every write route behind the same gate', function (string $method, st
         ->assertForbidden();
 })->with([
     ['GET', '/taurus/snapshot'],
-    ['POST', '/taurus/ask'],
+    ['POST', '/taurus/converse'],
     ['POST', '/taurus/analyse'],
     ['POST', '/taurus/subscriptions'],
     ['POST', '/taurus/targets'],
@@ -347,20 +352,309 @@ it('rejects a target for a metric that cannot be measured', function () {
 /* ------------------------------------------------------------------ */
 
 it('says so plainly when no AI provider is configured, rather than erroring', function () {
-    config()->set('services.ai_analysis', [
-        'anthropic' => ['label' => 'Claude', 'api_key' => null, 'model' => 'x', 'base_url' => 'https://example.test'],
-    ]);
+    config()->set('services.ai_analysis.anthropic.api_key', null);
 
     $this->actingAs(taurusUser())
-        ->postJson('/taurus/ask', ['query' => 'how are we doing?'])
+        ->postJson('/taurus/converse', ['query' => 'how are we doing?'])
         ->assertOk()
-        ->assertJsonFragment(['reply' => 'No AI provider is configured. Add ANTHROPIC_API_KEY (or another provider key) to .env, then run php artisan config:clear.']);
+        ->assertJsonPath('reply', fn (string $reply) => str_contains($reply, 'ANTHROPIC_API_KEY'));
 });
 
 it('validates the question before spending a model call', function () {
     $this->actingAs(taurusUser())
-        ->postJson('/taurus/ask', ['query' => ''])
+        ->postJson('/taurus/converse', ['query' => ''])
         ->assertStatus(422);
+});
+
+/* ------------------------------------------------------------------ */
+/* Toolkit — read tools run, write tools only ever propose */
+/* ------------------------------------------------------------------ */
+
+it('runs read tools immediately and returns JSON the model can use', function () {
+    $user = taurusUser();
+    $this->actingAs($user);
+
+    Lead::create(['mobile' => '9400000001', 'name' => 'Ramesh', 'source' => 'Meta Ads']);
+
+    $result = app(TaurusToolkit::class)->call('search_leads', ['query' => 'Ramesh']);
+
+    expect($result['is_error'])->toBeFalse()
+        ->and($result['action_id'])->toBeNull()
+        ->and(json_decode($result['content'], true)[0]['name'])->toBe('Ramesh');
+});
+
+it('never sends a message when the model calls send_message — it only queues one', function () {
+    $founder = taurusUser();
+    $meera = taurusUser('HR', 'meera@test.local');
+    $this->actingAs($founder);
+
+    $result = app(TaurusToolkit::class)->call('send_message', [
+        'user_id' => $meera->id,
+        'body' => 'Please call the Bengaluru leads today.',
+    ]);
+
+    expect($result['is_error'])->toBeFalse()
+        ->and($result['action_id'])->not->toBeNull()
+        // Queued, not sent: no conversation and no message exist yet.
+        ->and(Message::count())->toBe(0)
+        ->and(Conversation::count())->toBe(0)
+        ->and(TaurusAction::pending()->where('action', 'send_message')->count())->toBe(1);
+});
+
+it('sends the message only once the founder approves the proposal', function () {
+    $founder = taurusUser();
+    $meera = taurusUser('HR', 'meera2@test.local');
+
+    $this->actingAs($founder);
+    $queued = app(TaurusToolkit::class)->call('send_message', [
+        'user_id' => $meera->id,
+        'body' => 'Please call the Bengaluru leads today.',
+    ]);
+
+    $this->postJson('/taurus/actions/'.$queued['action_id'].'/confirm', ['decision' => 'approved'])
+        ->assertOk()
+        ->assertJson(['ok' => true]);
+
+    $message = Message::sole();
+
+    expect($message->body)->toBe('Please call the Bengaluru leads today.')
+        ->and($message->sender_id)->toBe($founder->id)
+        ->and($message->conversation->participants->pluck('id')->all())
+        ->toEqualCanonicalizing([$founder->id, $meera->id]);
+});
+
+it('executes the payload frozen at proposal time, not anything in the confirm request', function () {
+    $founder = taurusUser();
+    $meera = taurusUser('HR', 'meera3@test.local');
+    $mallory = taurusUser('HR', 'mallory@test.local');
+
+    $this->actingAs($founder);
+    $queued = app(TaurusToolkit::class)->call('send_message', [
+        'user_id' => $meera->id,
+        'body' => 'Original text.',
+    ]);
+
+    // Try to redirect and rewrite the message at approval time.
+    $this->postJson('/taurus/actions/'.$queued['action_id'].'/confirm', [
+        'decision' => 'approved',
+        'user_id' => $mallory->id,
+        'body' => 'Tampered text.',
+    ])->assertOk();
+
+    $message = Message::sole();
+
+    expect($message->body)->toBe('Original text.')
+        ->and($message->conversation->participants->pluck('id')->all())
+        ->not->toContain($mallory->id);
+});
+
+it('drops a dismissed proposal without executing it', function () {
+    $founder = taurusUser();
+    $meera = taurusUser('HR', 'meera4@test.local');
+
+    $this->actingAs($founder);
+    $queued = app(TaurusToolkit::class)->call('send_message', [
+        'user_id' => $meera->id,
+        'body' => 'Never sent.',
+    ]);
+
+    $this->postJson('/taurus/actions/'.$queued['action_id'].'/confirm', ['decision' => 'dismissed'])
+        ->assertOk();
+
+    expect(Message::count())->toBe(0)
+        ->and(TaurusAction::find($queued['action_id'])->status)->toBe(TaurusAction::STATUS_DISMISSED);
+});
+
+it('refuses to act on the same proposal twice', function () {
+    $founder = taurusUser();
+    $meera = taurusUser('HR', 'meera5@test.local');
+
+    $this->actingAs($founder);
+    $queued = app(TaurusToolkit::class)->call('send_message', [
+        'user_id' => $meera->id,
+        'body' => 'Once only.',
+    ]);
+
+    $this->postJson('/taurus/actions/'.$queued['action_id'].'/confirm', ['decision' => 'approved'])->assertOk();
+    $this->postJson('/taurus/actions/'.$queued['action_id'].'/confirm', ['decision' => 'approved'])->assertStatus(409);
+
+    expect(Message::count())->toBe(1);
+});
+
+it('hands bad tool arguments back to the model instead of throwing', function () {
+    $this->actingAs(taurusUser());
+
+    $result = app(TaurusToolkit::class)->call('send_message', [
+        'user_id' => 999999,   // no such user
+        'body' => 'hello',
+    ]);
+
+    expect($result['is_error'])->toBeTrue()
+        ->and($result['content'])->toContain('Invalid arguments')
+        ->and(TaurusAction::count())->toBe(0);
+});
+
+it('creates a task with its assignees only after approval', function () {
+    $founder = taurusUser();
+    $arjun = taurusUser('HR', 'arjun@test.local');
+
+    $this->actingAs($founder);
+    $queued = app(TaurusToolkit::class)->call('create_task', [
+        'title' => 'Chase the DevOps cohort',
+        'due_date' => today()->addDays(2)->toDateString(),
+        'priority' => 'high',
+        'assignee_ids' => [$arjun->id],
+    ]);
+
+    expect(Task::count())->toBe(0);
+
+    $this->postJson('/taurus/actions/'.$queued['action_id'].'/confirm', ['decision' => 'approved'])->assertOk();
+
+    $task = Task::sole();
+
+    expect($task->title)->toBe('Chase the DevOps cohort')
+        ->and($task->assignees->pluck('id')->all())->toBe([$arjun->id]);
+});
+
+it('declares only tools it can actually handle', function () {
+    $toolkit = app(TaurusToolkit::class);
+    $this->actingAs(taurusUser());
+
+    $readTools = array_values(array_filter(
+        $toolkit->declaredToolNames(),
+        fn (string $name) => ! $toolkit->isWriteTool($name)
+    ));
+
+    // Write tools route through propose(); every other declared tool must have
+    // a handler in the dispatcher, or a model calling it gets "Unknown tool".
+    expect($readTools)->not->toBeEmpty();
+
+    foreach ($readTools as $name) {
+        expect($toolkit->call($name, [])['content'])->not->toContain('Unknown tool');
+    }
+});
+
+/* ------------------------------------------------------------------ */
+/* The agent loop, against a faked Anthropic API */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Queue Anthropic responses in order, so one fake drives a whole
+ * tool_use -> tool_result -> end_turn cycle.
+ *
+ * @param  array<int, array<string, mixed>>  $responses
+ */
+function fakeClaude(array $responses): void
+{
+    config()->set('services.ai_analysis.anthropic.api_key', 'test-key');
+    config()->set('services.ai_analysis.anthropic.base_url', 'https://api.anthropic.test');
+
+    Http::fake([
+        'api.anthropic.test/*' => Http::sequence(
+            array_map(fn (array $r) => Http::response($r), $responses)
+        ),
+    ]);
+}
+
+it('runs the tool loop: calls a tool, feeds the result back, then answers', function () {
+    $user = taurusUser();
+    Lead::create(['mobile' => '9500000001', 'name' => 'Priya', 'source' => 'Meta Ads']);
+
+    fakeClaude([
+        [
+            'stop_reason' => 'tool_use',
+            'content' => [
+                ['type' => 'text', 'text' => 'Checking the lead list.'],
+                ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'search_leads', 'input' => ['query' => 'Priya']],
+            ],
+        ],
+        [
+            'stop_reason' => 'end_turn',
+            'content' => [['type' => 'text', 'text' => 'Priya came in from Meta Ads.']],
+        ],
+    ]);
+
+    $response = $this->actingAs($user)
+        ->postJson('/taurus/converse', ['query' => 'tell me about Priya'])
+        ->assertOk();
+
+    expect($response->json('reply'))->toBe('Priya came in from Meta Ads.')
+        ->and($response->json('tools_used'))->toBe(['search_leads'])
+        ->and($response->json('pending_actions'))->toBeEmpty();
+
+    // The second request must carry the tool_result back in a user message.
+    Http::assertSent(function ($request) {
+        $messages = $request['messages'] ?? [];
+        $last = end($messages);
+
+        return $last
+            && $last['role'] === 'user'
+            && is_array($last['content'])
+            && ($last['content'][0]['type'] ?? null) === 'tool_result'
+            && ($last['content'][0]['tool_use_id'] ?? null) === 'toolu_1';
+    });
+});
+
+it('returns a confirmation card instead of acting when the model calls a write tool', function () {
+    $founder = taurusUser();
+    $meera = taurusUser('HR', 'meera-loop@test.local');
+
+    fakeClaude([
+        [
+            'stop_reason' => 'tool_use',
+            'content' => [[
+                'type' => 'tool_use', 'id' => 'toolu_9', 'name' => 'send_message',
+                'input' => ['user_id' => $meera->id, 'body' => 'Can you call the new DevOps leads today?'],
+            ]],
+        ],
+        [
+            'stop_reason' => 'end_turn',
+            'content' => [['type' => 'text', 'text' => 'Ready to send that to Meera — approve it and it goes.']],
+        ],
+    ]);
+
+    $response = $this->actingAs($founder)
+        ->postJson('/taurus/converse', ['query' => 'ask meera to call the devops leads'])
+        ->assertOk();
+
+    expect($response->json('pending_actions.0.action'))->toBe('send_message')
+        ->and($response->json('pending_actions.0.payload.body'))->toBe('Can you call the new DevOps leads today?')
+        // Still nothing sent.
+        ->and(Message::count())->toBe(0);
+});
+
+it('stops looping instead of spending forever when the model keeps calling tools', function () {
+    $user = taurusUser();
+
+    // Always asks for another tool call, never finishes.
+    config()->set('services.ai_analysis.anthropic.api_key', 'test-key');
+    config()->set('services.ai_analysis.anthropic.base_url', 'https://api.anthropic.test');
+    Http::fake([
+        'api.anthropic.test/*' => Http::response([
+            'stop_reason' => 'tool_use',
+            'content' => [['type' => 'tool_use', 'id' => 'toolu_x', 'name' => 'list_team', 'input' => []]],
+        ]),
+    ]);
+
+    $response = $this->actingAs($user)
+        ->postJson('/taurus/converse', ['query' => 'loop forever'])
+        ->assertOk();
+
+    expect($response->json('reply'))->toContain('went round in circles');
+    Http::assertSentCount(8);
+});
+
+it('surfaces an API failure as a spoken sentence rather than a 500', function () {
+    config()->set('services.ai_analysis.anthropic.api_key', 'test-key');
+    config()->set('services.ai_analysis.anthropic.base_url', 'https://api.anthropic.test');
+    Http::fake([
+        'api.anthropic.test/*' => Http::response(['error' => ['message' => 'overloaded']], 529),
+    ]);
+
+    $this->actingAs(taurusUser())
+        ->postJson('/taurus/converse', ['query' => 'how are we doing?'])
+        ->assertOk()
+        ->assertJsonPath('reply', fn (string $r) => str_contains($r, 'could not reach the model'));
 });
 
 /* ------------------------------------------------------------------ */

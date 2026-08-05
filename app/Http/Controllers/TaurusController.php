@@ -6,6 +6,7 @@ use App\Models\TaurusAction;
 use App\Models\TaurusSubscription;
 use App\Models\TaurusTarget;
 use App\Models\User;
+use App\Services\Taurus\TaurusToolkit;
 use App\Services\TaurusAgentService;
 use App\Services\TaurusSnapshotService;
 use Illuminate\Http\JsonResponse;
@@ -24,9 +25,17 @@ use Illuminate\View\View;
  */
 class TaurusController extends Controller
 {
+    /**
+     * Tool calling is Anthropic-specific here, so the message names that key
+     * rather than "any provider" — see TaurusBrain::anthropicConfig().
+     */
+    private const AGENT_OFFLINE = 'Taurus is offline — add ANTHROPIC_API_KEY to .env and run '
+        .'php artisan config:clear. Every number on this page is still live.';
+
     public function __construct(
         private readonly TaurusSnapshotService $snapshot,
         private readonly TaurusAgentService $agent,
+        private readonly TaurusToolkit $toolkit,
     ) {}
 
     public function index(): View
@@ -72,13 +81,85 @@ class TaurusController extends Controller
     /* Agent */
     /* ------------------------------------------------------------------ */
 
-    public function ask(Request $request): JsonResponse
+    /**
+     * One turn of conversation, with tools.
+     *
+     * The transcript round-trips through the client so the console stays
+     * stateless. That is safe here: `history` only ever re-enters the model's
+     * own context, and every tool re-authorises against the session on the way
+     * in — nothing a client could put in it widens what this user may see or
+     * do. It is length-capped so a long session cannot grow the request
+     * without bound.
+     */
+    public function converse(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'query' => ['required', 'string', 'max:1000'],
+            'query' => ['required', 'string', 'max:2000'],
+            'history' => ['nullable', 'array', 'max:60'],
         ]);
 
-        return $this->agentResponse(fn () => $this->agent->ask($validated['query'])['reply']);
+        if (! $this->agent->isConfigured()) {
+            return response()->json([
+                'reply' => self::AGENT_OFFLINE,
+                'history' => [],
+                'pending_actions' => [],
+            ]);
+        }
+
+        try {
+            return response()->json($this->agent->converse($validated['query'], $validated['history'] ?? []));
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'reply' => 'Taurus could not reach the model: '.$e->getMessage(),
+                'history' => $validated['history'] ?? [],
+                'pending_actions' => [],
+            ]);
+        }
+    }
+
+    /**
+     * Approve or dismiss something Taurus proposed mid-conversation.
+     *
+     * Approving executes the payload frozen at proposal time — never anything
+     * in this request — so what runs is exactly what the card showed.
+     */
+    public function confirmAction(Request $request, TaurusAction $action): JsonResponse
+    {
+        $validated = $request->validate([
+            'decision' => ['required', 'in:approved,dismissed'],
+        ]);
+
+        if ($action->status !== TaurusAction::STATUS_PENDING) {
+            return response()->json(['ok' => false, 'message' => 'That one was already decided.'], 409);
+        }
+
+        if ($validated['decision'] === TaurusAction::STATUS_DISMISSED) {
+            $action->update([
+                'status' => TaurusAction::STATUS_DISMISSED,
+                'decided_by_user_id' => Auth::id(),
+                'decided_at' => now(),
+            ]);
+
+            return response()->json(['ok' => true, 'message' => 'Dropped it.']);
+        }
+
+        try {
+            $message = $this->toolkit->execute($action);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json(['ok' => false, 'message' => 'Could not carry that out: '.$e->getMessage()], 422);
+        }
+
+        $action->update([
+            'status' => TaurusAction::STATUS_APPROVED,
+            'decided_by_user_id' => Auth::id(),
+            'decided_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true, 'message' => $message]);
     }
 
     public function brief(): JsonResponse
@@ -106,9 +187,7 @@ class TaurusController extends Controller
     private function agentResponse(callable $callback): JsonResponse
     {
         if (! $this->agent->isConfigured()) {
-            return response()->json([
-                'reply' => 'No AI provider is configured. Add ANTHROPIC_API_KEY (or another provider key) to .env, then run php artisan config:clear.',
-            ]);
+            return response()->json(['reply' => self::AGENT_OFFLINE]);
         }
 
         try {

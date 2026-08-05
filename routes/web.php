@@ -392,13 +392,20 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/', [TaurusController::class, 'index'])->name('index');
         Route::get('/snapshot', [TaurusController::class, 'snapshot'])->name('snapshot');
 
-        // The agent routes each cost a paid model call, so they are throttled
-        // harder than the read-only endpoints around them.
+        // The agent routes each cost a paid model call — and /converse can cost
+        // several, since it loops over tool calls — so they are throttled harder
+        // than the read-only endpoints around them.
         Route::middleware('throttle:30,1')->group(function () {
-            Route::post('/ask', [TaurusController::class, 'ask'])->name('ask');
+            Route::post('/converse', [TaurusController::class, 'converse'])->name('converse');
             Route::post('/brief', [TaurusController::class, 'brief'])->name('brief');
             Route::post('/analyse', [TaurusController::class, 'analyse'])->name('analyse');
         });
+
+        // Deciding on a proposal is a cheap local write, so it sits outside the
+        // model-call throttle — being rate-limited out of approving your own
+        // pending action would be its own bug.
+        Route::post('/actions/{action}/confirm', [TaurusController::class, 'confirmAction'])
+            ->name('actions.confirm')->whereNumber('action');
 
         Route::post('/subscriptions', [TaurusController::class, 'storeSubscription'])->name('subscriptions.store');
         Route::patch('/subscriptions/{subscription}', [TaurusController::class, 'updateSubscription'])->name('subscriptions.update')->whereNumber('subscription');

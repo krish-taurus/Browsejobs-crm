@@ -19,7 +19,7 @@ class TaurusAction extends Model
     public const STATUS_DISMISSED = 'dismissed';
 
     protected $fillable = [
-        'action', 'target_type', 'target_id', 'summary', 'status',
+        'action', 'target_type', 'target_id', 'payload', 'summary', 'status',
         'requested_by_user_id', 'decided_by_user_id', 'decided_at', 'decision_note',
     ];
 
@@ -27,6 +27,7 @@ class TaurusAction extends Model
     {
         return [
             'decided_at' => 'datetime',
+            'payload' => 'array',
         ];
     }
 
