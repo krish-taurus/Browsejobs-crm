@@ -49,6 +49,7 @@ use App\Http\Controllers\StudentController;
 use App\Http\Controllers\StudentPulseController;
 use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\TaskController;
+use App\Http\Controllers\TaurusController;
 use App\Http\Controllers\TodoController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\WebsiteContentController;
@@ -380,6 +381,34 @@ Route::middleware(['auth'])->group(function () {
     Route::middleware('permission:view_social_alerts')->group(function () {
         Route::get('social-alerts', [SocialAlertController::class, 'index'])->name('social-alerts.index');
         Route::patch('social-alerts', [SocialAlertController::class, 'update'])->name('social-alerts.update');
+    });
+
+    // ---- Taurus Neural Ops — SUPER_ADMIN only ----
+    // Not permission-gated like the rest of the app: this one screen puts
+    // company finance, per-employee performance and lead activity together,
+    // so access follows role membership and cannot be granted from the
+    // Roles & Permissions matrix. See App\Http\Middleware\SuperAdminOnly.
+    Route::middleware('super-admin')->prefix('taurus')->name('taurus.')->group(function () {
+        Route::get('/', [TaurusController::class, 'index'])->name('index');
+        Route::get('/snapshot', [TaurusController::class, 'snapshot'])->name('snapshot');
+
+        // The agent routes each cost a paid model call, so they are throttled
+        // harder than the read-only endpoints around them.
+        Route::middleware('throttle:30,1')->group(function () {
+            Route::post('/ask', [TaurusController::class, 'ask'])->name('ask');
+            Route::post('/brief', [TaurusController::class, 'brief'])->name('brief');
+            Route::post('/analyse', [TaurusController::class, 'analyse'])->name('analyse');
+        });
+
+        Route::post('/subscriptions', [TaurusController::class, 'storeSubscription'])->name('subscriptions.store');
+        Route::patch('/subscriptions/{subscription}', [TaurusController::class, 'updateSubscription'])->name('subscriptions.update')->whereNumber('subscription');
+        Route::delete('/subscriptions/{subscription}', [TaurusController::class, 'destroySubscription'])->name('subscriptions.destroy')->whereNumber('subscription');
+
+        Route::post('/targets', [TaurusController::class, 'storeTarget'])->name('targets.store');
+        Route::delete('/targets/{target}', [TaurusController::class, 'destroyTarget'])->name('targets.destroy')->whereNumber('target');
+
+        Route::post('/actions', [TaurusController::class, 'queueAction'])->name('actions.queue');
+        Route::patch('/actions/{action}', [TaurusController::class, 'decideAction'])->name('actions.decide')->whereNumber('action');
     });
 
     // Old Main-Menu "To Do" link — a real page now lives at /todos.
