@@ -34,6 +34,7 @@ trait ListsPublicSitePages
         '/courses' => 'All Courses',
         '/masterclass' => 'Masterclass',
         '/jobs' => 'Jobs',
+        '/for-employers' => 'For Employers',
         '/skills' => 'Skills',
         '/salaries' => 'Salaries',
         '/reviews' => 'Reviews',
